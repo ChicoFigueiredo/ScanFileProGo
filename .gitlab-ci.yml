@@ -1,4 +1,4 @@
-# GitLab CI/CD Pipeline - ScanFile Pro
+# GitLab CI/CD Pipeline - ScanFile Pro (Auto-Minor Release)
 
 image: golang:1.22-bookworm
 
@@ -42,18 +42,41 @@ build-windows:
   stage: build
   dependencies: []
   before_script:
-    - apt-get update && apt-get install -y zip
+    - apt-get update && apt-get install -y zip git
     - mkdir -p .go
     - export GOPATH="$CI_PROJECT_DIR/.go"
   script:
     - |
+      git fetch --tags || true
+      
+      # Determinar versão com incremento automático de MINOR
       if [ -n "$CI_COMMIT_TAG" ]; then
         VERSION="${CI_COMMIT_TAG#v}"
+        TAG_NAME="$CI_COMMIT_TAG"
+      elif [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        LATEST_TAG=$(git tag -l "v*.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+        if [ -z "$LATEST_TAG" ]; then
+          VERSION="0.1.0"
+        else
+          RAW_VER="${LATEST_TAG#v}"
+          MAJOR=$(echo "$RAW_VER" | cut -d. -f1)
+          MINOR=$(echo "$RAW_VER" | cut -d. -f2)
+          NEW_MINOR=$((MINOR + 1))
+          VERSION="${MAJOR}.${NEW_MINOR}.0"
+        fi
+        TAG_NAME="v${VERSION}"
       else
-        VERSION="${DEFAULT_VERSION}-main.${CI_PIPELINE_IID}"
+        LATEST_TAG=$(git tag -l "v*.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+        RAW_VER="${LATEST_TAG#v}"
+        [ -z "$RAW_VER" ] && RAW_VER="0.1.0"
+        MAJOR=$(echo "$RAW_VER" | cut -d. -f1)
+        MINOR=$(echo "$RAW_VER" | cut -d. -f2)
+        VERSION="${MAJOR}.$((MINOR + 1)).0-mr.${CI_MERGE_REQUEST_IID:-$CI_PIPELINE_IID}"
+        TAG_NAME="v${VERSION}"
       fi
+
       BUILD_DATE=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
-      echo "Compilando ScanFile Pro v${VERSION} (${CI_COMMIT_SHORT_SHA})..."
+      echo "Compilando ScanFile Pro v${VERSION} (Tag: ${TAG_NAME}, Commit: ${CI_COMMIT_SHORT_SHA})..."
       
       mkdir -p dist
       GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${CI_COMMIT_SHORT_SHA}' -X 'main.Date=${BUILD_DATE}'" -o dist/scanfile.exe main.go
@@ -66,6 +89,8 @@ build-windows:
       cd ..
       
       echo "VERSION=${VERSION}" >> build.env
+      echo "TAG_NAME=${TAG_NAME}" >> build.env
+      echo "ZIP_NAME=${ZIP_NAME}" >> build.env
   artifacts:
     name: "scanfile-windows-amd64"
     reports:
@@ -91,12 +116,13 @@ upload-package:
   before_script: []
   script:
     - |
-      PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/scanfile-v${VERSION}-windows-amd64.zip"
+      PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/${ZIP_NAME}"
       echo "Enviando artefato para o Package Registry: ${PACKAGE_URL}"
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/scanfile-v${VERSION}-windows-amd64.zip \
+           --upload-file dist/${ZIP_NAME} \
            "${PACKAGE_URL}"
   rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_TAG'
 
 gitlab-release:
@@ -108,16 +134,17 @@ gitlab-release:
     - job: upload-package
   before_script: []
   script:
-    - echo "Criando Release oficial para v${VERSION}..."
+    - echo "Criando Release oficial para ${TAG_NAME} (v${VERSION})..."
   release:
-    name: "ScanFile Pro v${VERSION}"
-    tag_name: "$CI_COMMIT_TAG"
-    description: "Release oficial do ScanFile Pro v${VERSION} para Windows x64 (Binário nativo autocontido)."
+    name: "ScanFile Pro ${TAG_NAME}"
+    tag_name: "$TAG_NAME"
+    ref: "$CI_COMMIT_SHA"
+    description: "Release oficial do ScanFile Pro ${TAG_NAME} para Windows x64 (Binário nativo autocontido)."
     assets:
       links:
-        - name: "scanfile-v${VERSION}-windows-amd64.zip"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/scanfile-v${VERSION}-windows-amd64.zip"
+        - name: "${ZIP_NAME}"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/${ZIP_NAME}"
           link_type: "package"
   rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_TAG'
-

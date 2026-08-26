@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline (Auto-Minor Release)
 
 on:
   push:
@@ -9,11 +9,11 @@ on:
     branches: [ main ]
   workflow_dispatch:
     inputs:
-      create_release:
-        description: 'Criar release manual no GitHub'
+      custom_version:
+        description: 'Versão customizada (ex: 1.0.0). Se vazio, incrementa minor automaticamente.'
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Configurar Go
         uses: actions/setup-go@v5
@@ -46,15 +48,92 @@ jobs:
         run: go test -v -race ./...
 
   # ====================================================
-  # JOB 2: Compilação do Executável Windows (scanfile.exe)
+  # JOB 2: Cálculo de Versão Semântica (Auto Minor Increment)
+  # ====================================================
+  version:
+    name: Calcular Versão Semântica
+    needs: [test]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc_version.outputs.version }}
+      tag: ${{ steps.calc_version.outputs.tag }}
+      is_release: ${{ steps.calc_version.outputs.is_release }}
+    steps:
+      - name: Checkout com Histórico Completo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determinar Próxima Versão (Auto Minor Increment)
+        id: calc_version
+        run: |
+          # 1. Se o usuário passou versão manual no workflow_dispatch
+          if [ -n "${{ github.event.inputs.custom_version }}" ]; then
+            CLEAN_VER="${{ github.event.inputs.custom_version }}"
+            CLEAN_VER="${CLEAN_VER#v}"
+            TAG_NAME="v${CLEAN_VER}"
+            IS_RELEASE="true"
+          # 2. Se o gatilho foi uma Git Tag manual (ex: v1.0.0)
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG_NAME="${{ github.ref_name }}"
+            CLEAN_VER="${TAG_NAME#v}"
+            IS_RELEASE="true"
+          # 3. Se for push na branch main (Merge de PR ou commit direto)
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            # Buscar a maior tag semântica existente
+            LATEST_TAG=$(git tag -l "v*.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+            
+            if [ -z "$LATEST_TAG" ]; then
+              LATEST_TAG="v0.1.0"
+              NEW_MAJOR=0
+              NEW_MINOR=1
+              NEW_PATCH=0
+            else
+              # Extrair Major, Minor, Patch
+              RAW_VER="${LATEST_TAG#v}"
+              MAJOR=$(echo "$RAW_VER" | cut -d. -f1)
+              MINOR=$(echo "$RAW_VER" | cut -d. -f2)
+              PATCH=$(echo "$RAW_VER" | cut -d. -f3)
+              
+              # A menos que dito o contrário, incrementa a Minor version
+              NEW_MAJOR=$MAJOR
+              NEW_MINOR=$((MINOR + 1))
+              NEW_PATCH=0
+            fi
+            
+            CLEAN_VER="${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
+            TAG_NAME="v${CLEAN_VER}"
+            IS_RELEASE="true"
+          # 4. Se for Pull Request
+          else
+            LATEST_TAG=$(git tag -l "v*.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+            RAW_VER="${LATEST_TAG#v}"
+            [ -z "$RAW_VER" ] && RAW_VER="0.1.0"
+            MAJOR=$(echo "$RAW_VER" | cut -d. -f1)
+            MINOR=$(echo "$RAW_VER" | cut -d. -f2)
+            NEW_MINOR=$((MINOR + 1))
+            CLEAN_VER="${MAJOR}.${NEW_MINOR}.0-pr.${{ github.event.pull_request.number || github.run_number }}"
+            TAG_NAME="v${CLEAN_VER}"
+            IS_RELEASE="false"
+          fi
+
+          echo "Versão Calculada: ${CLEAN_VER} (Tag: ${TAG_NAME}, Criar Release: ${IS_RELEASE})"
+          echo "version=${CLEAN_VER}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "is_release=${IS_RELEASE}" >> $GITHUB_OUTPUT
+
+  # ====================================================
+  # JOB 3: Compilação do Executável Windows (scanfile.exe)
   # ====================================================
   build:
     name: Build do Executável Windows
-    needs: [test]
+    needs: [test, version]
     runs-on: windows-latest
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Configurar Go
         uses: actions/setup-go@v5
@@ -63,27 +142,15 @@ jobs:
           check-latest: true
           cache: true
 
-      - name: Determinar Versão
-        id: version
+      - name: Compilar scanfile.exe com Injeção de Versão
         shell: pwsh
         run: |
-          $ver = "0.1.0"
-          if ($env:GITHUB_REF -like "refs/tags/v*") {
-            $ver = $env:GITHUB_REF.Substring(11)
-          } elseif ($env:GITHUB_REF -eq "refs/heads/main") {
-            $ver = "0.1.0-main." + $env:GITHUB_RUN_NUMBER
-          }
+          $ver = "${{ needs.version.outputs.version }}"
           $commit = $env:GITHUB_SHA.Substring(0, 7)
           $buildDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss UTC")
           
-          Write-Output "VERSION=$ver" >> $env:GITHUB_ENV
-          Write-Output "COMMIT=$commit" >> $env:GITHUB_ENV
-          Write-Output "BUILD_DATE=$buildDate" >> $env:GITHUB_ENV
-
-      - name: Compilar scanfile.exe
-        shell: pwsh
-        run: |
-          $ldflags = "-s -w -X 'main.Version=$env:VERSION' -X 'main.Commit=$env:COMMIT' -X 'main.Date=$env:BUILD_DATE'"
+          Write-Host "Compilando ScanFile Pro v$ver (Commit: $commit, Data: $buildDate)..."
+          $ldflags = "-s -w -X 'main.Version=$ver' -X 'main.Commit=$commit' -X 'main.Date=$buildDate'"
           go build -ldflags $ldflags -o scanfile.exe main.go
 
       - name: Validar Executável Gerado
@@ -94,8 +161,9 @@ jobs:
       - name: Empacotar Release (ZIP + Checksum)
         shell: pwsh
         run: |
+          $ver = "${{ needs.version.outputs.version }}"
           New-Item -ItemType Directory -Force -Path dist
-          $zipName = "scanfile-v$($env:VERSION)-windows-amd64.zip"
+          $zipName = "scanfile-v$ver-windows-amd64.zip"
           Compress-Archive -Path scanfile.exe, README.md, docs -DestinationPath "dist/$zipName" -Force
           
           # Gerar SHA256 Checksum
@@ -110,16 +178,28 @@ jobs:
           retention-days: 14
 
   # ====================================================
-  # JOB 3: Publicação da Release no GitHub
+  # JOB 4: Publicação da Release no GitHub (com Tag Automática)
   # ====================================================
   release:
-    name: Publicar GitHub Release
-    needs: [build]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
+    name: Publicar GitHub Release Baixável
+    needs: [version, build]
+    if: needs.version.outputs.is_release == 'true' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event.inputs.custom_version != '')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Criar Tag no Repositório (se não existir)
+        run: |
+          TAG_NAME="${{ needs.version.outputs.tag }}"
+          if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG_NAME" -m "Release ScanFile Pro $TAG_NAME"
+            git push origin "$TAG_NAME"
+          fi
 
       - name: Download dos Artefatos Compilados
         uses: actions/download-artifact@v4
@@ -127,9 +207,11 @@ jobs:
           name: scanfile-windows-amd64
           path: dist
 
-      - name: Criar GitHub Release
+      - name: Publicar GitHub Release com Anexos
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: "ScanFile Pro ${{ needs.version.outputs.tag }}"
           files: |
             dist/*.zip
             dist/checksums-sha256.txt
