@@ -24,7 +24,7 @@ jobs:
   # ====================================================
   test:
     name: Lint & Testes Automatizados
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
