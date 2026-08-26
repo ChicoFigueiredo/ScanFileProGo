@@ -16,6 +16,8 @@ type FileNode struct {
 	Hash       string `json:"hash,omitempty"`
 	QuickHash  uint64 `json:"quickHash,omitempty"`
 	Extension  string `json:"extension"`
+	IsSymlink  bool   `json:"isSymlink,omitempty"`
+	LinkTarget string `json:"linkTarget,omitempty"`
 }
 
 // DirNode represents a folder in the hierarchy, aggregating its children's stats.
@@ -28,6 +30,8 @@ type DirNode struct {
 	ModTime     int64               `json:"modTime"`
 	CreateTime  int64               `json:"createTime"`
 	AccessTime  int64               `json:"accessTime"`
+	IsSymlink   bool                `json:"isSymlink,omitempty"`
+	LinkTarget  string              `json:"linkTarget,omitempty"`
 	Children    map[string]*DirNode `json:"children,omitempty"`
 	Files       []*FileNode         `json:"files,omitempty"`
 	mu          sync.RWMutex
@@ -43,6 +47,8 @@ type DirSummary struct {
 	ModTime     int64         `json:"modTime"`
 	CreateTime  int64         `json:"createTime"`
 	AccessTime  int64         `json:"accessTime"`
+	IsSymlink   bool          `json:"isSymlink,omitempty"`
+	LinkTarget  string        `json:"linkTarget,omitempty"`
 	SubDirs     []*DirSummary `json:"subDirs,omitempty"`
 	Files       []*FileNode   `json:"files,omitempty"`
 }

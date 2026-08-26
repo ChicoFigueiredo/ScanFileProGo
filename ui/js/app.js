@@ -1039,6 +1039,10 @@
                 }
               </span>
               <span class="tree-node-name ${isDir ? 'clickable-dir' : ''}" data-path="${item.path}">${item.name}</span>
+              ${item.isSymlink ? `
+                <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 6px;" title="Link Simbólico / Junção">🔗 Link</span>
+                ${item.linkTarget ? `<span style="font-size: 11px; opacity: 0.65; margin-left: 4px;" title="${item.linkTarget}">➔ ${item.linkTarget}</span>` : ''}
+              ` : ''}
             </div>
           </td>
           <td><strong>${formatBytes(item.totalSize)}</strong></td>

@@ -133,6 +133,15 @@ func (tm *TreeManager) FastSetDir(dirPath string, files []*FileNode, subDirNames
 	return node
 }
 
+// SetDirSymlink marks a directory node as a symbolic link or junction.
+func (tm *TreeManager) SetDirSymlink(dirPath string, target string) {
+	node := tm.EnsureDirNode(dirPath)
+	node.mu.Lock()
+	node.IsSymlink = true
+	node.LinkTarget = target
+	node.mu.Unlock()
+}
+
 // ComputeAggregatedSizes calculates TotalSize and FileCount bottom-up for all nodes in the tree in a single fast pass.
 func (tm *TreeManager) ComputeAggregatedSizes() {
 	tm.mu.RLock()
@@ -322,6 +331,8 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		ModTime:     node.ModTime,
 		CreateTime:  node.CreateTime,
 		AccessTime:  node.AccessTime,
+		IsSymlink:   node.IsSymlink,
+		LinkTarget:  node.LinkTarget,
 	}
 
 	// CRITICAL PERFORMANCE & MEMORY PROTECTION:

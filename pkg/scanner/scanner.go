@@ -26,6 +26,7 @@ type Scanner struct {
 	scannedBytes atomic.Int64
 	errorsCount  atomic.Int64
 
+	visitedDirs   sync.Map // map[string]bool canonical paths to prevent duplicate traversal & circular symlink loops
 	activeWorkers sync.Map // map[int]*ActiveWorker
 	recentFiles   []FileLogEntry
 	recentMu      sync.RWMutex
@@ -162,6 +163,15 @@ func (s *Scanner) StartScan(ctx context.Context, config ScanConfig, onProgress f
 	s.errorMu.Lock()
 	s.errorLogs = make([]ErrorLogEntry, 0, 100)
 	s.errorMu.Unlock()
+
+	s.visitedDirs = sync.Map{}
+	for _, root := range config.Roots {
+		if canonical, err := filepath.EvalSymlinks(root); err == nil {
+			s.visitedDirs.Store(strings.ToLower(canonical), true)
+		} else {
+			s.visitedDirs.Store(strings.ToLower(root), true)
+		}
+	}
 
 	startTime := time.Now().Unix()
 	s.SetStatus(func(st *ScanStatus) {
@@ -310,18 +320,58 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 		fullPath := filepath.Join(dirPath, name)
 		entryType := entry.Type()
+		isSymlinkOrJunction := entryType&os.ModeSymlink != 0 || entryType&os.ModeIrregular != 0
+
+		var info os.FileInfo
+		if isSymlinkOrJunction || entry.IsDir() {
+			if inf, err := entry.Info(); err == nil {
+				info = inf
+				if isReparsePoint(inf) {
+					isSymlinkOrJunction = true
+				}
+			}
+		}
 
 		if entry.IsDir() {
-			// CRITICAL: Windows Junction Point / Symlink protection
-			// Skip symlinks and NTFS Reparse Points (Junctions) to avoid infinite recursive directory traps!
-			if !config.FollowSymlinks {
-				if entryType&os.ModeSymlink != 0 || entryType&os.ModeIrregular != 0 {
+			if isSymlinkOrJunction {
+				// Read symlink / junction target path
+				target, _ := os.Readlink(fullPath)
+				if target == "" {
+					if eval, err := filepath.EvalSymlinks(fullPath); err == nil {
+						target = eval
+					}
+				}
+				s.Tree.SetDirSymlink(fullPath, target)
+
+				if !config.FollowSymlinks {
+					// Default: Do NOT descend into symlink folders (prevents double counting & loops)
+					subDirNames = append(subDirNames, name)
 					continue
 				}
-				if info, err := entry.Info(); err == nil {
-					if isReparsePoint(info) {
-						continue
-					}
+
+				// If followSymlinks is enabled: Guard against circular loops and double counting
+				canonicalTarget, err := filepath.EvalSymlinks(fullPath)
+				if err != nil {
+					subDirNames = append(subDirNames, name)
+					continue
+				}
+				lowerTarget := strings.ToLower(canonicalTarget)
+				if _, alreadyVisited := s.visitedDirs.LoadOrStore(lowerTarget, true); alreadyVisited {
+					// Target folder already scanned or in progress! Skip traversal to prevent duplication/loops
+					s.logFile(FileLogEntry{
+						Timestamp: time.Now(),
+						Path:      fullPath,
+						Status:    "SYMLINK_LOOP_SKIPPED",
+						Message:   "Link para pasta já mapeada: -> " + target,
+					})
+					subDirNames = append(subDirNames, name)
+					continue
+				}
+
+				// Check ancestor loop
+				if isAncestorPath(canonicalTarget, fullPath) {
+					subDirNames = append(subDirNames, name)
+					continue
 				}
 			}
 
@@ -338,18 +388,26 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 				continue // Skip infinite directory loop
 			}
 
+			// Store canonical dir
+			if canonical, err := filepath.EvalSymlinks(fullPath); err == nil {
+				s.visitedDirs.Store(strings.ToLower(canonical), true)
+			}
+
 			subDirNames = append(subDirNames, name)
 			// Enqueue subfolder directly without blocking
 			queue.Push(fullPath)
 		} else {
-			info, err := entry.Info()
-			if err != nil {
-				s.logError(fullPath, err, "phase1_stat")
-				continue
+			if info == nil {
+				inf, err := entry.Info()
+				if err != nil {
+					s.logError(fullPath, err, "phase1_stat")
+					continue
+				}
+				info = inf
 			}
 
 			// Skip Linux / WSL virtual pseudo-files with artificial astronomical sizes (e.g. /proc/kcore = 128 TB)
-			if name == "kcore" || (info.Mode()&os.ModeType != 0 && info.Mode()&os.ModeIrregular != 0) {
+			if name == "kcore" || (info.Mode()&os.ModeType != 0 && info.Mode()&os.ModeIrregular != 0 && !isSymlinkOrJunction) {
 				continue
 			}
 
@@ -365,6 +423,12 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 				CreateTime: createTime,
 				AccessTime: accessTime,
 				Extension:  ext,
+			}
+
+			if isSymlinkOrJunction {
+				target, _ := os.Readlink(fullPath)
+				fileNode.IsSymlink = true
+				fileNode.LinkTarget = target
 			}
 
 			dirFiles = append(dirFiles, fileNode)
@@ -388,6 +452,15 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 	s.scannedFiles.Add(localFilesCount)
 	s.scannedBytes.Add(localBytes)
+}
+
+func isAncestorPath(target, current string) bool {
+	target = strings.TrimRight(strings.ToLower(filepath.Clean(target)), `\/`)
+	current = strings.TrimRight(strings.ToLower(filepath.Clean(current)), `\/`)
+	if target == current {
+		return true
+	}
+	return strings.HasPrefix(current, target+string(filepath.Separator))
 }
 
 func isIgnoredSystemName(name string, dirPath string) bool {
