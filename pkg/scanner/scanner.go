@@ -303,8 +303,8 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 		name := entry.Name()
 
-		// Skip Windows System & Hidden internal files
-		if isIgnoredSystemName(name) {
+		// Skip Windows System & Hidden internal files, WSL virtual filesystems, and /proc/kcore
+		if isIgnoredSystemName(name, dirPath) {
 			continue
 		}
 
@@ -313,11 +313,29 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 		if entry.IsDir() {
 			// CRITICAL: Windows Junction Point / Symlink protection
-			// Skip symlinks and reparse points to avoid infinite recursive directory traps!
-			if entryType&os.ModeSymlink != 0 || entryType&os.ModeIrregular != 0 {
-				if !config.FollowSymlinks {
+			// Skip symlinks and NTFS Reparse Points (Junctions) to avoid infinite recursive directory traps!
+			if !config.FollowSymlinks {
+				if entryType&os.ModeSymlink != 0 || entryType&os.ModeIrregular != 0 {
 					continue
 				}
+				if info, err := entry.Info(); err == nil {
+					if isReparsePoint(info) {
+						continue
+					}
+				}
+			}
+
+			// Circular directory trap detection (e.g. A\B\A\B or AppData\Application Data\Application Data)
+			lowerName := strings.ToLower(name)
+			parts := strings.Split(strings.ToLower(fullPath), string(filepath.Separator))
+			seenCount := 0
+			for _, part := range parts {
+				if part == lowerName {
+					seenCount++
+				}
+			}
+			if seenCount >= 3 {
+				continue // Skip infinite directory loop
 			}
 
 			subDirNames = append(subDirNames, name)
@@ -327,6 +345,11 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 			info, err := entry.Info()
 			if err != nil {
 				s.logError(fullPath, err, "phase1_stat")
+				continue
+			}
+
+			// Skip Linux / WSL virtual pseudo-files with artificial astronomical sizes (e.g. /proc/kcore = 128 TB)
+			if name == "kcore" || (info.Mode()&os.ModeType != 0 && info.Mode()&os.ModeIrregular != 0) {
 				continue
 			}
 
@@ -367,12 +390,25 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 	s.scannedBytes.Add(localBytes)
 }
 
-func isIgnoredSystemName(name string) bool {
+func isIgnoredSystemName(name string, dirPath string) bool {
 	lower := strings.ToLower(name)
 	switch lower {
 	case "system volume information", "$recycle.bin", "$winreagent",
-		"pagefile.sys", "hiberfil.sys", "swapfile.sys", "dumpstack.log":
+		"pagefile.sys", "hiberfil.sys", "swapfile.sys", "dumpstack.log",
+		"kcore":
 		return true
+	case "proc", "sys", "dev":
+		// Ignore Linux virtual filesystems in WSL root or root directories
+		clean := strings.TrimRight(dirPath, `\/`)
+		if len(clean) <= 3 || strings.Contains(strings.ToLower(dirPath), "wsl") {
+			return true
+		}
+	case "mnt":
+		// Ignore /mnt inside WSL/Linux shares to prevent circular re-scanning of Windows drives C:\, E:\, etc.
+		clean := strings.TrimRight(dirPath, `\/`)
+		if len(clean) <= 3 || strings.Contains(strings.ToLower(dirPath), "wsl") {
+			return true
+		}
 	}
 	return false
 }
