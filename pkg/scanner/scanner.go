@@ -21,10 +21,12 @@ type Scanner struct {
 	cancelFunc context.CancelFunc
 	isRunning  atomic.Bool
 
-	scannedFiles atomic.Int64
-	scannedDirs  atomic.Int64
-	scannedBytes atomic.Int64
-	errorsCount  atomic.Int64
+	scannedFiles          atomic.Int64
+	scannedDirs           atomic.Int64
+	scannedBytes          atomic.Int64
+	scannedAllocatedBytes atomic.Int64
+	compressedFiles       atomic.Int64
+	errorsCount           atomic.Int64
 
 	visitedDirs   sync.Map // map[string]bool canonical paths to prevent duplicate traversal & circular symlink loops
 	activeWorkers sync.Map // map[int]*ActiveWorker
@@ -55,6 +57,12 @@ func (s *Scanner) GetStatus() ScanStatus {
 	st.TotalFilesScanned = s.scannedFiles.Load()
 	st.TotalDirsScanned = s.scannedDirs.Load()
 	st.TotalBytesScanned = s.scannedBytes.Load()
+	st.TotalAllocatedBytesScanned = s.scannedAllocatedBytes.Load()
+	st.CompressedFilesCount = s.compressedFiles.Load()
+	if st.TotalBytesScanned > st.TotalAllocatedBytesScanned && st.TotalAllocatedBytesScanned > 0 {
+		st.CompressedSpaceSavedBytes = st.TotalBytesScanned - st.TotalAllocatedBytesScanned
+		st.CompressionRatio = float64(st.TotalBytesScanned) / float64(st.TotalAllocatedBytesScanned)
+	}
 	st.ErrorsCount = int(s.errorsCount.Load())
 
 	// Collect active workers (if not in Phase 2 where Hasher updates ActiveWorkers directly)
@@ -154,6 +162,8 @@ func (s *Scanner) StartScan(ctx context.Context, config ScanConfig, onProgress f
 	s.scannedFiles.Store(0)
 	s.scannedDirs.Store(0)
 	s.scannedBytes.Store(0)
+	s.scannedAllocatedBytes.Store(0)
+	s.compressedFiles.Store(0)
 	s.errorsCount.Store(0)
 
 	s.recentMu.Lock()
@@ -302,6 +312,8 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 	var dirFiles []*FileNode
 	var subDirNames []string
 	var localBytes int64
+	var localAllocatedBytes int64
+	var localCompressedCount int64
 	var localFilesCount int64
 
 	for _, entry := range entries {
@@ -412,17 +424,20 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 			}
 
 			size := info.Size()
+			allocatedSize, isCompressed := GetAllocatedFileSize(fullPath, info)
 			modTime, createTime, accessTime := ExtractFileTimestamps(info)
 			ext := strings.ToLower(filepath.Ext(name))
 
 			fileNode := &FileNode{
-				Path:       fullPath,
-				Name:       name,
-				Size:       size,
-				ModTime:    modTime,
-				CreateTime: createTime,
-				AccessTime: accessTime,
-				Extension:  ext,
+				Path:          fullPath,
+				Name:          name,
+				Size:          size,
+				AllocatedSize: allocatedSize,
+				IsCompressed:  isCompressed,
+				ModTime:       modTime,
+				CreateTime:    createTime,
+				AccessTime:    accessTime,
+				Extension:     ext,
 			}
 
 			if isSymlinkOrJunction {
@@ -433,6 +448,10 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 			dirFiles = append(dirFiles, fileNode)
 			localBytes += size
+			localAllocatedBytes += allocatedSize
+			if isCompressed {
+				localCompressedCount++
+			}
 			localFilesCount++
 
 			// Log sample files for transparency
@@ -452,6 +471,8 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 	s.scannedFiles.Add(localFilesCount)
 	s.scannedBytes.Add(localBytes)
+	s.scannedAllocatedBytes.Add(localAllocatedBytes)
+	s.compressedFiles.Add(localCompressedCount)
 }
 
 func isAncestorPath(target, current string) bool {

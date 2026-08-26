@@ -60,6 +60,9 @@
     statFiles: document.getElementById('statFiles'),
     statDirs: document.getElementById('statDirs'),
     statBytes: document.getElementById('statBytes'),
+    statAllocatedBytes: document.getElementById('statAllocatedBytes'),
+    statCompressedCount: document.getElementById('statCompressedCount'),
+    statCompressedSaved: document.getElementById('statCompressedSaved'),
     statSpeed: document.getElementById('statSpeed'),
     statElapsed: document.getElementById('statElapsed'),
     progressBarFill: document.getElementById('progressBarFill'),
@@ -709,6 +712,23 @@
     elements.statFiles.textContent = formatNumber(st.totalFilesScanned);
     elements.statDirs.textContent = formatNumber(st.totalDirsScanned);
     elements.statBytes.textContent = formatBytes(st.totalBytesScanned);
+    if (elements.statAllocatedBytes) {
+      elements.statAllocatedBytes.textContent = formatBytes(st.totalAllocatedBytesScanned || st.totalBytesScanned);
+    }
+    if (elements.statCompressedCount) {
+      elements.statCompressedCount.textContent = formatNumber(st.compressedFilesCount || 0);
+    }
+    if (elements.statCompressedSaved) {
+      const saved = st.compressedSpaceSavedBytes || 0;
+      if (saved > 0) {
+        const ratio = st.compressionRatio ? ` (${st.compressionRatio.toFixed(2)}x)` : '';
+        elements.statCompressedSaved.textContent = `+${formatBytes(saved)}${ratio}`;
+        elements.statCompressedSaved.style.color = '#34d399';
+      } else {
+        elements.statCompressedSaved.textContent = '0 B';
+        elements.statCompressedSaved.style.color = 'var(--text-muted)';
+      }
+    }
     elements.currentPathText.textContent = st.currentPath || 'Processando...';
 
     // Update Errors Badge
@@ -1005,11 +1025,15 @@
           path: f.path,
           name: f.name,
           totalSize: f.size,
+          totalAllocatedSize: f.allocatedSize || f.size,
+          isCompressed: f.isCompressed,
           fileCount: 1,
           subDirCount: 0,
           createTime: f.createTime,
           modTime: f.modTime,
           isFile: true,
+          isSymlink: f.isSymlink,
+          linkTarget: f.linkTarget,
         })));
       }
     }
@@ -1020,13 +1044,17 @@
     }
 
     if (items.length === 0) {
-      elements.treeTableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Nenhum item nesta pasta.</td></tr>';
+      elements.treeTableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Nenhum item nesta pasta.</td></tr>';
       return;
     }
 
     elements.treeTableBody.innerHTML = items.map(item => {
       const pct = Math.min(100, ((item.totalSize / parentSize) * 100)).toFixed(1);
       const isDir = !item.isFile;
+      const allocated = item.totalAllocatedSize !== undefined ? item.totalAllocatedSize : (item.totalSize || 0);
+      const hasCompression = item.isCompressed || (item.compressedFileCount > 0);
+      const compressionBadge = item.isCompressed ?
+        `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); font-size: 10px; padding: 1px 4px; border-radius: 3px; margin-left: 4px;" title="Arquivo Comprimido no NTFS">📦 NTFS</span>` : '';
 
       return `
         <tr class="${isDir ? 'dir-row' : 'file-row'}" data-path="${item.path}" style="${isDir ? 'cursor: pointer;' : ''}">
@@ -1046,6 +1074,10 @@
             </div>
           </td>
           <td><strong>${formatBytes(item.totalSize)}</strong></td>
+          <td>
+            <span style="${allocated < item.totalSize ? 'color: #34d399; font-weight: 600;' : ''}">${formatBytes(allocated)}</span>
+            ${compressionBadge}
+          </td>
           <td>
             <div class="size-meter-cell">
               <div class="size-meter-bar">

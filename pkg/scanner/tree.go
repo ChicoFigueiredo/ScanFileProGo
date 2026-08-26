@@ -156,15 +156,25 @@ func (tm *TreeManager) ComputeAggregatedSizes() {
 	}
 }
 
-func computeNodeSize(node *DirNode) (totalSize int64, fileCount int64) {
+func computeNodeSize(node *DirNode) (totalSize int64, totalAllocated int64, fileCount int64, compressedFiles int64) {
 	if node == nil {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 
 	node.mu.Lock()
 	var directSize int64
+	var directAllocated int64
+	var directCompressed int64
 	for _, f := range node.Files {
 		directSize += f.Size
+		alloc := f.AllocatedSize
+		if alloc == 0 && f.Size > 0 && !f.IsCompressed {
+			alloc = f.Size
+		}
+		directAllocated += alloc
+		if f.IsCompressed {
+			directCompressed++
+		}
 	}
 	directFiles := int64(len(node.Files))
 	children := make([]*DirNode, 0, len(node.Children))
@@ -174,21 +184,27 @@ func computeNodeSize(node *DirNode) (totalSize int64, fileCount int64) {
 	node.mu.Unlock()
 
 	totalSize = directSize
+	totalAllocated = directAllocated
 	fileCount = directFiles
+	compressedFiles = directCompressed
 
 	for _, child := range children {
-		cSize, cCount := computeNodeSize(child)
+		cSize, cAlloc, cCount, cComp := computeNodeSize(child)
 		totalSize += cSize
+		totalAllocated += cAlloc
 		fileCount += cCount
+		compressedFiles += cComp
 	}
 
 	node.mu.Lock()
 	node.TotalSize = totalSize
+	node.TotalAllocatedSize = totalAllocated
 	node.FileCount = fileCount
+	node.CompressedFileCount = compressedFiles
 	node.SubDirCount = int64(len(children))
 	node.mu.Unlock()
 
-	return totalSize, fileCount
+	return totalSize, totalAllocated, fileCount, compressedFiles
 }
 
 // AddFile inserts a file into the tree and updates parent directories.
@@ -323,16 +339,18 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 
 	node.mu.RLock()
 	summary := &DirSummary{
-		Path:        node.Path,
-		Name:        node.Name,
-		TotalSize:   node.TotalSize,
-		FileCount:   node.FileCount,
-		SubDirCount: node.SubDirCount,
-		ModTime:     node.ModTime,
-		CreateTime:  node.CreateTime,
-		AccessTime:  node.AccessTime,
-		IsSymlink:   node.IsSymlink,
-		LinkTarget:  node.LinkTarget,
+		Path:                node.Path,
+		Name:                node.Name,
+		TotalSize:           node.TotalSize,
+		TotalAllocatedSize:  node.TotalAllocatedSize,
+		FileCount:           node.FileCount,
+		CompressedFileCount: node.CompressedFileCount,
+		SubDirCount:         node.SubDirCount,
+		ModTime:             node.ModTime,
+		CreateTime:          node.CreateTime,
+		AccessTime:          node.AccessTime,
+		IsSymlink:           node.IsSymlink,
+		LinkTarget:          node.LinkTarget,
 	}
 
 	// CRITICAL PERFORMANCE & MEMORY PROTECTION:

@@ -193,8 +193,20 @@
               <span class="stat-val" id="statDirs">0</span>
             </div>
             <div class="hud-stat-box">
-              <span class="stat-label">Tamanho Descoberto</span>
+              <span class="stat-label">Tamanho Lógico</span>
               <span class="stat-val" id="statBytes">0 B</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Físico em Disco</span>
+              <span class="stat-val" id="statAllocatedBytes">0 B</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Comprimidos (NTFS)</span>
+              <span class="stat-val" id="statCompressedCount">0</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Economia / Ganho</span>
+              <span class="stat-val" id="statCompressedSaved" style="color: #34d399;">0 B</span>
             </div>
             <div class="hud-stat-box">
               <span class="stat-label">Velocidade</span>
@@ -321,7 +333,8 @@
                 <thead>
                   <tr>
                     <th class="th-name">Nome da Pasta / Arquivo</th>
-                    <th class="th-size">Tamanho</th>
+                    <th class="th-size">Tamanho Lógico</th>
+                    <th class="th-allocated">Físico em Disco</th>
                     <th class="th-percent">% do Total</th>
                     <th class="th-files">Arquivos</th>
                     <th class="th-subdirs">Subpastas</th>
@@ -331,7 +344,7 @@
                 </thead>
                 <tbody id="treeTableBody">
                   <tr>
-                    <td colspan="7" class="empty-state">Inicie uma varredura para visualizar a árvore de arquivos.</td>
+                    <td colspan="8" class="empty-state">Inicie uma varredura para visualizar a árvore de arquivos.</td>
                   </tr>
                 </tbody>
               </table>

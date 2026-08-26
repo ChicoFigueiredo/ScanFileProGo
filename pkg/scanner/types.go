@@ -7,50 +7,56 @@ import (
 
 // FileNode represents an individual file in the tree.
 type FileNode struct {
-	Path       string `json:"path"`
-	Name       string `json:"name"`
-	Size       int64  `json:"size"`
-	ModTime    int64  `json:"modTime"`    // Unix timestamp in seconds (Modificação)
-	CreateTime int64  `json:"createTime"` // Unix timestamp in seconds (Criação)
-	AccessTime int64  `json:"accessTime"` // Unix timestamp in seconds (Último Acesso)
-	Hash       string `json:"hash,omitempty"`
-	QuickHash  uint64 `json:"quickHash,omitempty"`
-	Extension  string `json:"extension"`
-	IsSymlink  bool   `json:"isSymlink,omitempty"`
-	LinkTarget string `json:"linkTarget,omitempty"`
+	Path          string `json:"path"`
+	Name          string `json:"name"`
+	Size          int64  `json:"size"`          // Logical size in bytes (Tamanho Lógico)
+	AllocatedSize int64  `json:"allocatedSize"` // Physical allocated size on disk in bytes (Tamanho Físico / Alocado)
+	ModTime       int64  `json:"modTime"`       // Unix timestamp in seconds (Modificação)
+	CreateTime    int64  `json:"createTime"`    // Unix timestamp in seconds (Criação)
+	AccessTime    int64  `json:"accessTime"`    // Unix timestamp in seconds (Último Acesso)
+	Hash          string `json:"hash,omitempty"`
+	QuickHash     uint64 `json:"quickHash,omitempty"`
+	Extension     string `json:"extension"`
+	IsSymlink     bool   `json:"isSymlink,omitempty"`
+	LinkTarget    string `json:"linkTarget,omitempty"`
+	IsCompressed  bool   `json:"isCompressed,omitempty"`
 }
 
 // DirNode represents a folder in the hierarchy, aggregating its children's stats.
 type DirNode struct {
-	Path        string              `json:"path"`
-	Name        string              `json:"name"`
-	TotalSize   int64               `json:"totalSize"`
-	FileCount   int64               `json:"fileCount"`
-	SubDirCount int64               `json:"subDirCount"`
-	ModTime     int64               `json:"modTime"`
-	CreateTime  int64               `json:"createTime"`
-	AccessTime  int64               `json:"accessTime"`
-	IsSymlink   bool                `json:"isSymlink,omitempty"`
-	LinkTarget  string              `json:"linkTarget,omitempty"`
-	Children    map[string]*DirNode `json:"children,omitempty"`
-	Files       []*FileNode         `json:"files,omitempty"`
-	mu          sync.RWMutex
+	Path                string              `json:"path"`
+	Name                string              `json:"name"`
+	TotalSize           int64               `json:"totalSize"`          // Total logical size
+	TotalAllocatedSize  int64               `json:"totalAllocatedSize"` // Total physical allocated size
+	FileCount           int64               `json:"fileCount"`
+	CompressedFileCount int64               `json:"compressedFileCount"`
+	SubDirCount         int64               `json:"subDirCount"`
+	ModTime             int64               `json:"modTime"`
+	CreateTime          int64               `json:"createTime"`
+	AccessTime          int64               `json:"accessTime"`
+	IsSymlink           bool                `json:"isSymlink,omitempty"`
+	LinkTarget          string              `json:"linkTarget,omitempty"`
+	Children            map[string]*DirNode `json:"children,omitempty"`
+	Files               []*FileNode         `json:"files,omitempty"`
+	mu                  sync.RWMutex
 }
 
 // DirSummary is a lightweight view of a directory for UI tree browsing.
 type DirSummary struct {
-	Path        string        `json:"path"`
-	Name        string        `json:"name"`
-	TotalSize   int64         `json:"totalSize"`
-	FileCount   int64         `json:"fileCount"`
-	SubDirCount int64         `json:"subDirCount"`
-	ModTime     int64         `json:"modTime"`
-	CreateTime  int64         `json:"createTime"`
-	AccessTime  int64         `json:"accessTime"`
-	IsSymlink   bool          `json:"isSymlink,omitempty"`
-	LinkTarget  string        `json:"linkTarget,omitempty"`
-	SubDirs     []*DirSummary `json:"subDirs,omitempty"`
-	Files       []*FileNode   `json:"files,omitempty"`
+	Path                string        `json:"path"`
+	Name                string        `json:"name"`
+	TotalSize           int64         `json:"totalSize"`
+	TotalAllocatedSize  int64         `json:"totalAllocatedSize"`
+	FileCount           int64         `json:"fileCount"`
+	CompressedFileCount int64         `json:"compressedFileCount"`
+	SubDirCount         int64         `json:"subDirCount"`
+	ModTime             int64         `json:"modTime"`
+	CreateTime          int64         `json:"createTime"`
+	AccessTime          int64         `json:"accessTime"`
+	IsSymlink           bool          `json:"isSymlink,omitempty"`
+	LinkTarget          string        `json:"linkTarget,omitempty"`
+	SubDirs             []*DirSummary `json:"subDirs,omitempty"`
+	Files               []*FileNode   `json:"files,omitempty"`
 }
 
 // ScanConfig holds parameters for initiating a scan.
@@ -95,29 +101,33 @@ type ErrorLogEntry struct {
 
 // ScanStatus represents the active progress state of the scanner and hasher.
 type ScanStatus struct {
-	Phase                string          `json:"phase"` // "idle", "phase1_metadata", "phase2_hashing", "completed", "watching"
-	TotalFilesScanned    int64           `json:"totalFilesScanned"`
-	TotalDirsScanned     int64           `json:"totalDirsScanned"`
-	TotalBytesScanned    int64           `json:"totalBytesScanned"`
-	FilesToHashCount     int64           `json:"filesToHashCount"`
-	FilesHashedCount     int64           `json:"filesHashedCount"`
-	BytesHashed          int64           `json:"bytesHashed"`
-	DuplicateGroupsCount       int             `json:"duplicateGroupsCount"`
-	DuplicateFilesCount        int             `json:"duplicateFilesCount"`
-	DuplicateWastedBytes       int64           `json:"duplicateWastedBytes"`
-	DuplicateFolderGroupsCount int             `json:"duplicateFolderGroupsCount"`
-	DuplicateFoldersCount      int             `json:"duplicateFoldersCount"`
-	DuplicateFolderWastedBytes int64           `json:"duplicateFolderWastedBytes"`
-	CurrentPath                string          `json:"currentPath"`
-	ScanRateFilesPerSec  float64         `json:"scanRateFilesPerSec"`
-	HashRateMBPerSec     float64         `json:"hashRateMBPerSec"`
-	ProgressPercent      float64         `json:"progressPercent"`
-	StartTime            int64           `json:"startTime"`
-	ElapsedTimeSec       float64         `json:"elapsedTimeSec"`
-	IsWatching           bool            `json:"isWatching"`
-	ActiveWorkers        []ActiveWorker  `json:"activeWorkers,omitempty"`
-	RecentFiles          []FileLogEntry  `json:"recentFiles,omitempty"`
-	ErrorsCount          int             `json:"errorsCount"`
+	Phase                      string         `json:"phase"` // "idle", "phase1_metadata", "phase2_hashing", "completed", "watching"
+	TotalFilesScanned          int64          `json:"totalFilesScanned"`
+	TotalDirsScanned           int64          `json:"totalDirsScanned"`
+	TotalBytesScanned          int64          `json:"totalBytesScanned"`          // Logical size
+	TotalAllocatedBytesScanned int64          `json:"totalAllocatedBytesScanned"` // Physical allocated size on disk
+	CompressedFilesCount       int64          `json:"compressedFilesCount"`       // Count of compressed files
+	CompressedSpaceSavedBytes  int64          `json:"compressedSpaceSavedBytes"`  // Bytes saved: Logical - Allocated
+	CompressionRatio           float64        `json:"compressionRatio"`           // Ratio: Logical / Allocated
+	FilesToHashCount           int64          `json:"filesToHashCount"`
+	FilesHashedCount           int64          `json:"filesHashedCount"`
+	BytesHashed                int64          `json:"bytesHashed"`
+	DuplicateGroupsCount       int            `json:"duplicateGroupsCount"`
+	DuplicateFilesCount        int            `json:"duplicateFilesCount"`
+	DuplicateWastedBytes       int64          `json:"duplicateWastedBytes"`
+	DuplicateFolderGroupsCount int            `json:"duplicateFolderGroupsCount"`
+	DuplicateFoldersCount      int            `json:"duplicateFoldersCount"`
+	DuplicateFolderWastedBytes int64          `json:"duplicateFolderWastedBytes"`
+	CurrentPath                string         `json:"currentPath"`
+	ScanRateFilesPerSec        float64        `json:"scanRateFilesPerSec"`
+	HashRateMBPerSec           float64        `json:"hashRateMBPerSec"`
+	ProgressPercent            float64        `json:"progressPercent"`
+	StartTime                  int64          `json:"startTime"`
+	ElapsedTimeSec             float64        `json:"elapsedTimeSec"`
+	IsWatching                 bool           `json:"isWatching"`
+	ActiveWorkers              []ActiveWorker `json:"activeWorkers,omitempty"`
+	RecentFiles                []FileLogEntry `json:"recentFiles,omitempty"`
+	ErrorsCount                int            `json:"errorsCount"`
 }
 
 // FSEventLog represents a real-time OS file change event.
