@@ -1,0 +1,11 @@
+# Logs
+logs/
+*.log
+
+# Temp files
+*.tmp
+ScanFile_Webview_Profile/
+
+*.exe
+*.dll
+*.pdb

@@ -921,7 +921,15 @@
       const url = `/api/tree?path=${encodeURIComponent(path)}&depth=${depth}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Não foi possível carregar o diretório.');
-      const data = await res.json();
+      const text = await res.text();
+      let data = [];
+      if (text && text.trim() !== '' && text.trim() !== 'null') {
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          data = [];
+        }
+      }
       state.treeData = data;
       state.treemap.rawTree = data;
 

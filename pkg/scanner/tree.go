@@ -148,27 +148,37 @@ func (tm *TreeManager) ComputeAggregatedSizes() {
 }
 
 func computeNodeSize(node *DirNode) (totalSize int64, fileCount int64) {
-	node.mu.Lock()
-	defer node.mu.Unlock()
+	if node == nil {
+		return 0, 0
+	}
 
+	node.mu.Lock()
 	var directSize int64
 	for _, f := range node.Files {
 		directSize += f.Size
 	}
 	directFiles := int64(len(node.Files))
+	children := make([]*DirNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		children = append(children, child)
+	}
+	node.mu.Unlock()
 
 	totalSize = directSize
 	fileCount = directFiles
 
-	for _, child := range node.Children {
+	for _, child := range children {
 		cSize, cCount := computeNodeSize(child)
 		totalSize += cSize
 		fileCount += cCount
 	}
 
+	node.mu.Lock()
 	node.TotalSize = totalSize
 	node.FileCount = fileCount
-	node.SubDirCount = int64(len(node.Children))
+	node.SubDirCount = int64(len(children))
+	node.mu.Unlock()
+
 	return totalSize, fileCount
 }
 
@@ -298,9 +308,11 @@ func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int) *DirSummary {
 }
 
 func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *DirSummary {
-	node.mu.RLock()
-	defer node.mu.RUnlock()
+	if node == nil {
+		return nil
+	}
 
+	node.mu.RLock()
 	summary := &DirSummary{
 		Path:        node.Path,
 		Name:        node.Name,
@@ -314,10 +326,22 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 	}
 	copy(summary.Files, node.Files)
 
+	var children []*DirNode
 	if currentDepth <= maxDepth {
-		subDirs := make([]*DirSummary, 0, len(node.Children))
+		children = make([]*DirNode, 0, len(node.Children))
 		for _, child := range node.Children {
-			subDirs = append(subDirs, tm.buildSummary(child, currentDepth+1, maxDepth))
+			children = append(children, child)
+		}
+	}
+	node.mu.RUnlock()
+
+	if currentDepth <= maxDepth && len(children) > 0 {
+		subDirs := make([]*DirSummary, 0, len(children))
+		for _, child := range children {
+			subSummary := tm.buildSummary(child, currentDepth+1, maxDepth)
+			if subSummary != nil {
+				subDirs = append(subDirs, subSummary)
+			}
 		}
 		sort.Slice(subDirs, func(i, j int) bool {
 			return subDirs[i].TotalSize > subDirs[j].TotalSize
@@ -345,6 +369,10 @@ func (tm *TreeManager) GetAllFiles() []*FileNode {
 }
 
 func (tm *TreeManager) collectFiles(node *DirNode, list *[]*FileNode) {
+	if node == nil {
+		return
+	}
+
 	node.mu.RLock()
 	*list = append(*list, node.Files...)
 	children := make([]*DirNode, 0, len(node.Children))

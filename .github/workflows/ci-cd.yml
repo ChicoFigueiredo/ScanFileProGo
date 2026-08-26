@@ -1,0 +1,138 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Criar release manual no GitHub'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ====================================================
+  # JOB 1: Análise Estática e Testes Automatizados
+  # ====================================================
+  test:
+    name: Lint & Testes Automatizados
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+          cache: true
+
+      - name: Baixar Dependências
+        run: go mod download
+
+      - name: Executar go vet
+        run: go vet ./...
+
+      - name: Executar Testes Unitários
+        run: go test -v -race ./...
+
+  # ====================================================
+  # JOB 2: Compilação do Executável Windows (scanfile.exe)
+  # ====================================================
+  build:
+    name: Build do Executável Windows
+    needs: [test]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+          cache: true
+
+      - name: Determinar Versão
+        id: version
+        shell: pwsh
+        run: |
+          $ver = "0.1.0"
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $ver = $env:GITHUB_REF.Substring(11)
+          } elseif ($env:GITHUB_REF -eq "refs/heads/main") {
+            $ver = "0.1.0-main." + $env:GITHUB_RUN_NUMBER
+          }
+          $commit = $env:GITHUB_SHA.Substring(0, 7)
+          $buildDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss UTC")
+          
+          Write-Output "VERSION=$ver" >> $env:GITHUB_ENV
+          Write-Output "COMMIT=$commit" >> $env:GITHUB_ENV
+          Write-Output "BUILD_DATE=$buildDate" >> $env:GITHUB_ENV
+
+      - name: Compilar scanfile.exe
+        shell: pwsh
+        run: |
+          $ldflags = "-s -w -X 'main.Version=$env:VERSION' -X 'main.Commit=$env:COMMIT' -X 'main.Date=$env:BUILD_DATE'"
+          go build -ldflags $ldflags -o scanfile.exe main.go
+
+      - name: Validar Executável Gerado
+        shell: pwsh
+        run: |
+          .\scanfile.exe --version
+
+      - name: Empacotar Release (ZIP + Checksum)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          $zipName = "scanfile-v$($env:VERSION)-windows-amd64.zip"
+          Compress-Archive -Path scanfile.exe, README.md, docs -DestinationPath "dist/$zipName" -Force
+          
+          # Gerar SHA256 Checksum
+          $hash = (Get-FileHash -Path "dist/$zipName" -Algorithm SHA256).Hash
+          "$hash  $zipName" | Out-File -FilePath dist/checksums-sha256.txt -Encoding utf8
+
+      - name: Upload de Artefatos do Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanfile-windows-amd64
+          path: dist/*
+          retention-days: 14
+
+  # ====================================================
+  # JOB 3: Publicação da Release no GitHub
+  # ====================================================
+  release:
+    name: Publicar GitHub Release
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+
+      - name: Download dos Artefatos Compilados
+        uses: actions/download-artifact@v4
+        with:
+          name: scanfile-windows-amd64
+          path: dist
+
+      - name: Criar GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/checksums-sha256.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: false

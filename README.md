@@ -1,87 +1,162 @@
 # ScanFile Pro 🚀
 
-> **Analisador de Espaço em Disco de Alta Performance, Deduplicação Inteligente por Hash e Monitoramento do SO em Tempo Real para Windows (Escrito em Go).**
+> **Analisador de Espaço em Disco de Alta Performance, Gráfico da Estrutura (Cushion Treemap), Deduplicação Inteligente por Hash e Monitoramento do SO em Tempo Real para Windows (100% em Go).**
 
 ---
 
-## 📋 Visão Geral
+## 📚 Documentação Técnica Completa
 
-O **ScanFile Pro** é uma ferramenta nativa para Windows desenvolvida em Go, projetada para combinar a velocidade de análise de ferramentas como *TreeSize* e *WinDirStat* com a precisão de deduplicação por hash criptográfico e ganchos (*hooks*) de monitoramento do sistema de arquivos em tempo real.
+Para detalhes aprofundados sobre o design, decisões de arquitetura e organização do código, consulte a pasta [`docs/`](docs/):
+
+- 📄 **[Arquitetura do Sistema (`docs/ARQUITETURA.md`)](docs/ARQUITETURA.md)**: Explicação detalhada sobre autocontenção do binário, carregamento de assets HTML em memória RAM (sem pastas temporárias em disco), comunicação via Server-Sent Events (SSE), motor de Smart Hashing, tokens de segurança Win32 (`SeBackupPrivilege`) e proteção anti-zumbi.
+- 📄 **[Estrutura do Projeto (`docs/ESTRUTURA_DO_PROJETO.md`)](docs/ESTRUTURA_DO_PROJETO.md)**: Mapeamento de todos os pacotes Go (`pkg/`), arquivos, componentes frontend e catálogo de endpoints REST e SSE da API.
 
 ---
 
 ## ✨ Principais Funcionalidades
 
-1. **Interface Nativa Windows Moderna (Dark Theme & Glassmorphism)**:
-   - Interface fluida com gráficos, medidores visuais de ocupação de disco, tabela em árvore interativa e sem congelamentos na UI.
-   - Totalmente embutida dentro do executável (`//go:embed`), sem necessidade de instalar dependências externas no cliente.
-
-2. **Seleção de Discos & Scanner Multithread Paralelo**:
-   - Detecta todos os discos lógicos do Windows (C:, D:, E:, etc.), exibindo capacidade total, espaço livre e porcentagem de uso.
-   - Permite selecionar qualquer combinação de drives ou diretórios raiz.
-   - Dispara goroutines/threads dedicadas por disco raiz + worker pool dinâmico para varredura recursiva de diretórios em alta velocidade.
-
-3. **Varredura em Duas Fases (Two-Phase Scan)**:
-   - **Fase 1 (Metadados em Memória)**: Mapeia toda a hierarquia de pastas, tamanhos e datas na velocidade máxima do disco, permitindo que você comece a navegar na árvore imediatamente.
-   - **Fase 2 (Hash Multithread Inteligente)**:
-     - Algoritmo em 3 estágios: agrupa arquivos pelo tamanho exato em bytes $\rightarrow$ calcula pré-amostra rápida (xxHash64) $\rightarrow$ calcula hash completo apenas para arquivos com mesma amostra.
-     - Opção de escolha entre **xxHash64** (ultra rápido, 10+ GB/s) e **SHA-256** (padrão criptográfico).
-
-4. **Explorador Hierárquico em Árvore (Estilo TreeSize / WinDirStat)**:
-   - Navegação por pastas com barras de porcentagem visual em relação ao disco/pasta pai, contagem de subpastas e arquivos, e ordenação automática do maior para o menor.
-   - Breadcrumbs clicáveis e filtro instantâneo por nome/extensão (.mp4, .zip, etc.).
-
-5. **Agrupamento por Hash & Localizador de Duplicados**:
-   - Agrupamento de arquivos com mesmo hash ordenado pelo **maior tamanho de arquivo no topo** (ou maior espaço desperdiçado).
-   - **Proteção contra Colisão de Hash**: arquivos de tamanhos diferentes são estritamente isolados e nunca agrupados juntos.
-   - Regras de marcação automática inteligente:
-     - ⭐ *Manter mais recente* (marca os clones mais antigos para remoção).
-     - 📅 *Manter mais antigo* (marca as cópias recentes para remoção).
-     - Seleção manual por checkbox com somatório em tempo real do espaço a ser liberado.
-
-6. **Envio Seguro para a Lixeira do Windows**:
-   - Integração com a API Win32 nativa `SHFileOperationW` (`FOF_ALLOWUNDO`).
-   - Os arquivos marcados são movidos para a **Lixeira oficial do Windows**, podendo ser restaurados a qualquer momento pelo usuário.
-
-7. **Monitor do Sistema Operacional em Tempo Real (Hooks do Windows)**:
-   - Utiliza `ReadDirectoryChangesW` (`fsnotify`) nos discos escaneados.
-   - Detecta criações, modificações, renomeações e exclusões de arquivos em segundo plano.
-   - Atualiza a árvore em memória e o índice de hashes instantaneamente sem necessidade de re-escanear todo o disco.
-   - Feed visual de logs de eventos com badges coloridos (`CREATE`, `WRITE`, `REMOVE`, `RENAME`).
+### 1. 📊 Gráfico da Estrutura (Cushion Treemap Interativo estilo TreeSize)
+- **Algoritmo Squarified Treemap**: Renderização ultra-rápida em **HTML5 Canvas 2D** com proporção de aspecto otimizada (Bruls-Huizing-van Wijk) e sombreamento volumétrico (*cushion gradient shading*).
+- **Visualização Dividida (Lado a Lado)**:
+  - 🌓 **Dividido**: Tabela hierárquica detalhada à esquerda + Gráfico Treemap à direita.
+  - 📊 **Apenas Gráfico**: Treemap em tela cheia para exploração visual imersiva.
+  - 📁 **Apenas Tabela**: Tabela completa com colunas de tamanho, alocado, arquivos, pastas e datas.
+- **Navegação Fluida & Drill-Down (Zoom In / Out)**:
+  - **Duplo-clique em qualquer bloco**: Faz Zoom-In instantâneo na pasta clicada com recálculo dos subblocos.
+  - **Clique simples**: Destaca a borda do bloco e rola a tabela automaticamente até a linha correspondente.
+  - **Botão "Subir Nível" & Breadcrumbs**: Retorne facilmente a qualquer nível superior ou para "Meus Discos".
+- **Controle Dinâmico de Profundidade (Slider de 2 a 20 Níveis)**: Ajuste em tempo real da profundidade da árvore exibida no gráfico.
+- **3 Modos de Cores Customizáveis**:
+  - 🎨 **Por Tipo de Arquivo**: Vídeos (azul), Áudio (amarelo), Imagens (verde), Compactados (laranja), Executáveis (rosa), Documentos (ciano), Código/DB (roxo) e Pastas.
+  - 🌈 **Por Nível / Profundidade**: Nível 0, Nível 1, Nível 2... com **Régua de Níveis** no rodapé (estilo TreeSize clássico).
+  - 🔥 **Por Idade / Inatividade**: Gradiente térmico de verde (<30 dias) a vermelho (>5 anos).
+- **Tooltip Flutuante & Menu de Contexto (Botão Direito)**:
+  - Hover rico com caminho completo, tamanho, porcentagem, contagens e datas.
+  - Menu no botão direito: *Entrar na Pasta*, *Subir Nível*, *Copiar Caminho* e *Mandar para a Lixeira do Windows*.
 
 ---
 
-## 🛠️ Como Rodar
+### 2. ⚡ Scanner Multithread Paralelo & Smart Hashing
+- **Varredura em Duas Fases**:
+  - **Fase 1 (Metadados em RAM)**: Mapeia milhões de arquivos na velocidade máxima de I/O do disco com workers paralelos.
+  - **Fase 2 (Smart Progressive Hashing)**:
+    1. *Filtro de Tamanho Único*: Arquivos com tamanho exclusivo em bytes nunca são lidos do disco (0% I/O desperdiçado).
+    2. *Smart Pre-Hash (4 KB)*: Amostra rápida dos primeiros 4 KB.
+    3. *Smart Mid-Hash (4 KB)*: Amostra dos 4 KB do final do arquivo.
+    4. *Full-Hash*: Hash completo de 100% dos dados apenas em colisões reais.
+- **Múltiplos Algoritmos de Hash**: **xxHash** (ultra rápido, >5 GB/s por núcleo), **BLAKE3** (alta performance criptográfica), **MD5** e **SHA-256**.
 
-### Opção 1: Executar o Binário Pré-compilado (Recomendado)
+---
 
-Basta dar dois cliques em `scanfile.exe` ou executar no terminal:
+### 3. 🛡️ Modo Administrador com Redirecionamento IPC e Proteção Anti-Zumbi
+- **Execução Privilegiada (`--admin`)**:
+  - Habilita o token **`SeBackupPrivilege`** do Windows para contornar permissões de NTFS (*Access Control Lists*) e ler pastas de sistema protegidas (ex: `System Volume Information`, `WindowsApps`, perfis de outros usuários).
+- **Processo Invisível com Saída no Terminal Original**:
+  - O processo elevado roda em segundo plano com a flag `SW_HIDE` (sem abrir uma segunda janela de console preta).
+  - Um canal IPC local via TCP transmite todos os logs e saídas em tempo real diretamente para o seu terminal original.
+- **Proteção Anti-Zumbi (Parent Process PID Watcher)**:
+  - O processo filho monitora o PID do processo pai via `windows.WaitForSingleObject`.
+  - Se o terminal pai for fechado, receber `Ctrl+C` ou for finalizado pelo Gerenciador de Tarefas, o processo elevado é **encerrado instantaneamente**, garantindo zero processos órfãos na memória.
 
+---
+
+### 4. 💾 Configurações Persistentes (`scanfile_config.json`)
+- Todas as suas escolhas são gravadas automaticamente em arquivo JSON:
+  - Discos selecionados para varredura.
+  - Threads de CPU, algoritmos de hash e limites de tamanho.
+  - Profundidade do treemap, esquemas de cores e modo de visualização.
+  - Nível de zoom da interface.
+  - Filtros de ordenação de duplicatas e arquivos ociosos.
+- Ao abrir o aplicativo, seu ambiente é restaurado exatamente como você deixou.
+
+---
+
+### 5. 🖥️ Layout Full-Width & Controle de Zoom da UI
+- **100% da Largura da Tela**: Layout fluido otimizado para monitores Ultrawide, 1080p, 1440p e 4K.
+- **Controles de Zoom no Cabeçalho**:
+  - `➖` Diminuir Zoom (passo de 5%).
+  - `100%` Indicador de Zoom (clique para redefinir instantaneamente).
+  - `➕` Aumentar Zoom (passo de 5%).
+  - **Atalhos de Teclado**: `Ctrl +`, `Ctrl -` e `Ctrl 0`.
+  - O Treemap se recalcula e reescala automaticamente em qualquer nível de zoom.
+
+---
+
+### 6. 📁 Comparador de Pastas & Arquivos Ociosos
+- **Comparador de Pastas**:
+  - Detecta pastas inteiras clonadas/duplicadas e calcula o total de espaço desperdiçado.
+  - Comparação lado a lado entre dois diretórios com visualização de arquivos idênticos, modificados e exclusivos.
+- **Localizador de Arquivos Ociosos**:
+  - Identifica arquivos sem modificação há mais de 1, 2, 3 ou 5 anos com filtros de tamanho mínimo configuráveis.
+
+---
+
+### 7. 🗑️ Lixeira Oficial do Windows & Snapshots de Cache
+- **Lixeira do Windows Segura**:
+  - Integração com a API Win32 `SHFileOperationW` (`FOF_ALLOWUNDO`), permitindo restaurar qualquer arquivo excluído acidentalmente direto da Lixeira do sistema.
+- **Snapshots de Cache em Disco**:
+  - Salve o estado completo da árvore e hashes em disco (`.scanfile.cache.json.gz`) para consultas instantâneas no futuro sem precisar reescanear o disco.
+
+---
+
+### 8. 📡 Monitor do SO em Tempo Real (Hooks do Windows)
+- Monitora os discos ativos via `ReadDirectoryChangesW` (`fsnotify`), atualizando a árvore e os hashes na memória em tempo real quando arquivos são criados, modificados, renomeados ou excluídos.
+
+---
+
+## 🚀 Como Executar
+
+### 1. Execução Padrão (Interface Gráfica)
 ```powershell
 .\scanfile.exe
 ```
 
-O aplicativo iniciará o motor Go em segundo plano e abrirá a janela nativa do Windows automaticamente.
-
----
-
-### Opção 2: Compilar a partir do Código Fonte
-
-Requisitos: **Go 1.22+** instalado.
-
+### 2. Execução como Administrador (Acesso Total / SeBackupPrivilege)
 ```powershell
-# 1. Compilar o executável
-go build -o scanfile.exe main.go
+.\scanfile.exe --admin
+```
 
-# 2. Executar
-.\scanfile.exe
+### 3. Execução com Gravação de Logs em Disco (`logs/`)
+```powershell
+.\scanfile.exe --log
+```
+ou combinando Administrador e Logs:
+```powershell
+.\scanfile.exe --admin --log
+```
+
+### 4. Modo Headless (Apenas Servidor Backend / Sem Janela)
+```powershell
+.\scanfile.exe --no-window --port=8080
 ```
 
 ---
 
-## 🧪 Executando os Testes Automatizados
+## 🛠️ Compilação do Código Fonte
 
-Para rodar todos os testes unitários de scanner, hasher e indexer:
+Requisitos: **Go 1.22+** no Windows.
+
+### Usando o Script PowerShell de Compilação Automatizada:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+*(Executa análise estática com `go vet`, roda os testes unitários automatizados e compila o `scanfile.exe`).*
+
+### Usando o Script Batch Tradicional:
+```cmd
+build.bat
+```
+
+### Compilação Manual via Go CLI:
+```powershell
+go build -ldflags="-s -w" -o scanfile.exe main.go
+```
+
+---
+
+## 🧪 Executando os Testes Unitários
+
+Para rodar todos os testes automatizados dos pacotes (`pkg/config`, `pkg/hasher`, `pkg/indexer`, `pkg/scanner`):
 
 ```powershell
 go test -v ./...
@@ -89,54 +164,6 @@ go test -v ./...
 
 ---
 
-## 📁 Estrutura do Projeto
+## 📜 Licença
 
-```
-ScanFile/
-├── main.go                       # Ponto de entrada, embutimento de assets e inicialização de janela nativa
-├── go.mod                        # Módulo Go e dependências
-├── go.sum                        # Checksums de dependências
-├── scanfile.exe                  # Executável nativo compilado (9.8 MB autônomo)
-├── pkg/
-│   ├── drives/                   # Detecção de drives Win32 (GetLogicalDriveStringsW, GetDiskFreeSpaceEx)
-│   │   └── drives_windows.go
-│   ├── scanner/                  # Motor de varredura multithread (Fase 1) e árvore de diretórios
-│   │   ├── types.go
-│   │   ├── tree.go
-│   │   ├── tree_test.go
-│   │   └── scanner.go
-│   ├── hasher/                   # Motor de cálculo de Hash multithread (Fase 2)
-│   │   ├── hasher.go
-│   │   └── hasher_test.go
-│   ├── indexer/                  # Agrupador de duplicados, ordenação por tamanho e tratamento de colisão
-│   │   ├── duplicate_index.go
-│   │   └── duplicate_index_test.go
-│   ├── watcher/                  # Ganchos de monitoramento do Windows (ReadDirectoryChangesW / fsnotify)
-│   │   └── watcher_windows.go
-│   ├── recycle/                  # Integração com a Lixeira do Windows (SHFileOperationW)
-│   │   └── recycle_windows.go
-│   └── server/                   # Servidor de API REST e SSE (Server-Sent Events) em tempo real
-│       └── server.go
-└── ui/                           # Interface Web moderna embutida
-    ├── index.html                # Layout com abas, cards de discos, HUD e exploradores
-    ├── css/
-    │   └── styles.css            # Dark Theme, Glassmorphism, medidores de tamanho e animações
-    └── js/
-        └── app.js                # Lógica reativa do cliente, SSE em tempo real, árvore e filtros
-```
-
----
-
-## 💡 Casos de Uso e Exemplo Prático
-
-1. **Liberar Espaço Rápido**:
-   - Selecione seus drives (ex: `C:\` e `D:\`).
-   - Clique em **"Iniciar Varredura Multithread"**.
-   - Na aba **Duplicados por Hash**, os maiores arquivos duplicados (ex: vídeos de 10 GB repetidos) aparecerão no topo.
-   - Clique em **"⭐ Manter +Recente"** e depois em **"Mandar para Lixeira do Windows"**.
-
-2. **Explorar Pastas Pesadas**:
-   - Acesse a aba **Explorador em Árvore** e veja instantaneamente quais pastas ocupam a maior porcentagem do seu disco com barras visuais.
-
-3. **Monitoramento Contínuo**:
-   - Deixe o aplicativo aberto; a aba **Monitor do SO** continuará recebendo eventos do Windows e manterá a memória 100% atualizada em tempo real.
+Distribuído sob licença MIT. Sinta-se livre para usar, modificar e distribuir.

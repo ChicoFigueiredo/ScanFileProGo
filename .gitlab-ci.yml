@@ -1,0 +1,123 @@
+# GitLab CI/CD Pipeline - ScanFile Pro
+
+image: golang:1.22-bookworm
+
+stages:
+  - test
+  - build
+  - release
+
+variables:
+  CGO_ENABLED: "0"
+  DEFAULT_VERSION: "0.1.0"
+
+# Cache de módulos Go para acelerar o pipeline
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .go/pkg/mod/
+
+before_script:
+  - mkdir -p .go
+  - export GOPATH="$CI_PROJECT_DIR/.go"
+
+# ====================================================
+# STAGE: Test (Lint & Testes Automatizados)
+# ====================================================
+lint-and-test:
+  stage: test
+  script:
+    - go mod download
+    - go vet ./...
+    - go test -v -race ./...
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# ====================================================
+# STAGE: Build (Compilação do Executável Windows)
+# ====================================================
+build-windows:
+  stage: build
+  dependencies: []
+  before_script:
+    - apt-get update && apt-get install -y zip
+    - mkdir -p .go
+    - export GOPATH="$CI_PROJECT_DIR/.go"
+  script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        VERSION="${CI_COMMIT_TAG#v}"
+      else
+        VERSION="${DEFAULT_VERSION}-main.${CI_PIPELINE_IID}"
+      fi
+      BUILD_DATE=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
+      echo "Compilando ScanFile Pro v${VERSION} (${CI_COMMIT_SHORT_SHA})..."
+      
+      mkdir -p dist
+      GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${CI_COMMIT_SHORT_SHA}' -X 'main.Date=${BUILD_DATE}'" -o dist/scanfile.exe main.go
+      
+      # Empacotar ZIP com binário e documentação
+      cd dist
+      ZIP_NAME="scanfile-v${VERSION}-windows-amd64.zip"
+      zip -r "$ZIP_NAME" scanfile.exe ../README.md ../docs/
+      sha256sum "$ZIP_NAME" > checksums-sha256.txt
+      cd ..
+      
+      echo "VERSION=${VERSION}" >> build.env
+  artifacts:
+    name: "scanfile-windows-amd64"
+    reports:
+      dotenv: build.env
+    paths:
+      - dist/scanfile.exe
+      - dist/*.zip
+      - dist/checksums-sha256.txt
+    expire_in: 14 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# ====================================================
+# STAGE: Release (Upload para Package Registry e Criação de Release no GitLab)
+# ====================================================
+upload-package:
+  stage: release
+  image: curlimages/curl:latest
+  dependencies:
+    - build-windows
+  before_script: []
+  script:
+    - |
+      PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/scanfile-v${VERSION}-windows-amd64.zip"
+      echo "Enviando artefato para o Package Registry: ${PACKAGE_URL}"
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/scanfile-v${VERSION}-windows-amd64.zip \
+           "${PACKAGE_URL}"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+
+gitlab-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build-windows
+      artifacts: true
+    - job: upload-package
+  before_script: []
+  script:
+    - echo "Criando Release oficial para v${VERSION}..."
+  release:
+    name: "ScanFile Pro v${VERSION}"
+    tag_name: "$CI_COMMIT_TAG"
+    description: "Release oficial do ScanFile Pro v${VERSION} para Windows x64 (Binário nativo autocontido)."
+    assets:
+      links:
+        - name: "scanfile-v${VERSION}-windows-amd64.zip"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/scanfile-v${VERSION}-windows-amd64.zip"
+          link_type: "package"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+

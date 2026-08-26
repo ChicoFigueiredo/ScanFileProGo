@@ -23,8 +23,16 @@ import (
 //go:embed ui/*
 var embeddedUI embed.FS
 
+var (
+	// Version can be overwritten during build with -ldflags "-X main.Version=0.1.0"
+	Version = "0.1.0"
+	Commit  = "dev"
+	Date    = "now"
+)
+
 func main() {
 	// Parse CLI Flags
+	flagVersion := flag.Bool("version", false, "Exibe a versão do ScanFile Pro")
 	flagLog := flag.Bool("log", false, "Habilita gravação de logs gerais da aplicação em arquivo de log na pasta local")
 	flagAdmin := flag.Bool("admin", false, "Executa diretamente como Administrador (solicita elevação UAC se necessário)")
 	flagPort := flag.Int("port", 0, "Porta HTTP do servidor (0 para porta aleatória disponível)")
@@ -33,6 +41,11 @@ func main() {
 	flagIPCAddr := flag.String("ipc-addr", "", "Endereço IPC interno para redirecionar saída ao console pai")
 	flagParentPID := flag.Int("parent-pid", 0, "PID do processo pai para encerramento automático sem processos zumbis")
 	flag.Parse()
+
+	if *flagVersion {
+		fmt.Printf("ScanFile Pro v%s (commit: %s, built: %s)\n", Version, Commit, Date)
+		return
+	}
 
 	// Anti-Zombie Process Guard: If running as child, monitor parent PID
 	if *flagParentPID > 0 {

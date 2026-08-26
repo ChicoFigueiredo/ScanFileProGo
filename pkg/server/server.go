@@ -544,9 +544,11 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 		depth = d
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+
 	if path == "" {
 		// Return summary of all roots
-		var rootSummaries []*scanner.DirSummary
+		rootSummaries := make([]*scanner.DirSummary, 0)
 		s.Tree.RootsLock(func(roots map[string]*scanner.DirNode) {
 			for _, rNode := range roots {
 				summary := s.Tree.GetDirSummary(rNode.Path, depth)
@@ -555,18 +557,24 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		})
-		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(rootSummaries)
 		return
 	}
 
 	summary := s.Tree.GetDirSummary(path, depth)
 	if summary == nil {
-		http.Error(w, "Directory not found in tree", http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"path":        path,
+			"name":        filepath.Base(path),
+			"totalSize":   0,
+			"fileCount":   0,
+			"subDirCount": 0,
+			"subDirs":     []*scanner.DirSummary{},
+			"files":       []*scanner.FileNode{},
+		})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
 }
 
