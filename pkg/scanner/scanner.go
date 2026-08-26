@@ -56,21 +56,23 @@ func (s *Scanner) GetStatus() ScanStatus {
 	st.TotalBytesScanned = s.scannedBytes.Load()
 	st.ErrorsCount = int(s.errorsCount.Load())
 
-	// Collect active workers
-	var workers []ActiveWorker
-	s.activeWorkers.Range(func(key, value any) bool {
-		if w, ok := value.(*ActiveWorker); ok && w != nil {
-			workers = append(workers, *w)
-		}
-		return true
-	})
-	st.ActiveWorkers = workers
+	// Collect active workers (if not in Phase 2 where Hasher updates ActiveWorkers directly)
+	if st.Phase != "phase2_hashing" {
+		var workers []ActiveWorker
+		s.activeWorkers.Range(func(key, value any) bool {
+			if w, ok := value.(*ActiveWorker); ok && w != nil {
+				workers = append(workers, *w)
+			}
+			return true
+		})
+		st.ActiveWorkers = workers
 
-	// Collect recent files
-	s.recentMu.RLock()
-	st.RecentFiles = make([]FileLogEntry, len(s.recentFiles))
-	copy(st.RecentFiles, s.recentFiles)
-	s.recentMu.RUnlock()
+		// Collect recent files from scanner
+		s.recentMu.RLock()
+		st.RecentFiles = make([]FileLogEntry, len(s.recentFiles))
+		copy(st.RecentFiles, s.recentFiles)
+		s.recentMu.RUnlock()
+	}
 
 	if st.StartTime > 0 {
 		elapsed := time.Since(time.Unix(st.StartTime, 0)).Seconds()

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,9 +124,10 @@ func (s *AppServer) Start(port int) (string, error) {
 			return "", err
 		}
 	}
+
 	s.listener = ln
 	s.httpServer = &http.Server{
-		Handler:      s.corsMiddleware(mux),
+		Handler:      s.corsMiddleware(s.debugMiddleware(mux)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}
@@ -134,6 +137,53 @@ func (s *AppServer) Start(port int) (string, error) {
 	}()
 
 	return fmt.Sprintf("http://%s", ln.Addr().String()), nil
+}
+
+// DebugMode controls verbose HTTP request and internal state logging.
+var DebugMode bool
+
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int64
+}
+
+func (rec *responseRecorder) WriteHeader(code int) {
+	rec.statusCode = code
+	rec.ResponseWriter.WriteHeader(code)
+}
+
+func (rec *responseRecorder) Write(b []byte) (int, error) {
+	n, err := rec.ResponseWriter.Write(b)
+	rec.bytesWritten += int64(n)
+	return n, err
+}
+
+func (rec *responseRecorder) Flush() {
+	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *AppServer) debugMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+
+		defer func() {
+			if recErr := recover(); recErr != nil {
+				log.Printf("[PANIC RECOVER] %s %s: %v\nStack:\n%s\n", r.Method, r.URL.Path, recErr, string(debug.Stack()))
+				http.Error(w, fmt.Sprintf("Internal Server Error: %v", recErr), http.StatusInternalServerError)
+			}
+			if DebugMode && !strings.HasPrefix(r.URL.Path, "/api/events") {
+				duration := time.Since(start)
+				log.Printf("[HTTP DEBUG] %s %s | Status: %d | Size: %d B | Time: %v | Remote: %s\n",
+					r.Method, r.URL.RequestURI(), rec.statusCode, rec.bytesWritten, duration, r.RemoteAddr)
+			}
+		}()
+
+		next.ServeHTTP(rec, r)
+	})
 }
 
 // Stop gracefully stops the server.
@@ -542,6 +592,10 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 	depth := 1
 	if d, err := strconv.Atoi(depthStr); err == nil && d > 0 {
 		depth = d
+	}
+
+	if DebugMode {
+		log.Printf("[DEBUG /api/tree] Consulta de árvore: path=%q depth=%d\n", path, depth)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -34,6 +34,7 @@ func main() {
 	// Parse CLI Flags
 	flagVersion := flag.Bool("version", false, "Exibe a versão do ScanFile Pro")
 	flagLog := flag.Bool("log", false, "Habilita gravação de logs gerais da aplicação em arquivo de log na pasta local")
+	flagDebug := flag.Bool("debug", false, "Habilita modo debug com log ultra-detalhado de requisições, I/O, memória RAM e erros em arquivo local")
 	flagAdmin := flag.Bool("admin", false, "Executa diretamente como Administrador (solicita elevação UAC se necessário)")
 	flagPort := flag.Int("port", 0, "Porta HTTP do servidor (0 para porta aleatória disponível)")
 	flagNoWindow := flag.Bool("no-window", false, "Inicia apenas o servidor de backend sem abrir janela gráfica")
@@ -45,6 +46,10 @@ func main() {
 	if *flagVersion {
 		fmt.Printf("ScanFile Pro v%s (commit: %s, built: %s)\n", Version, Commit, Date)
 		return
+	}
+
+	if *flagDebug {
+		server.DebugMode = true
 	}
 
 	// Anti-Zombie Process Guard: If running as child, monitor parent PID
@@ -88,11 +93,15 @@ func main() {
 		}
 	}
 
-	// Setup Disk File Logging if --log flag is passed
-	if *flagLog {
+	// Setup Disk File Logging if --log or --debug flag is passed
+	if *flagLog || *flagDebug {
 		logDir := "logs"
 		_ = os.MkdirAll(logDir, 0755)
-		logFileName := filepath.Join(logDir, fmt.Sprintf("scanfile_app_%s.log", time.Now().Format("2006-01-02_150405")))
+		prefix := "scanfile_app"
+		if *flagDebug {
+			prefix = "scanfile_debug"
+		}
+		logFileName := filepath.Join(logDir, fmt.Sprintf("%s_%s.log", prefix, time.Now().Format("2006-01-02_150405")))
 		logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err == nil {
 			writers = append(writers, logFile)
@@ -103,6 +112,20 @@ func main() {
 	}
 
 	log.SetOutput(io.MultiWriter(writers...))
+
+	// Periodic RAM & Goroutines monitor when in Debug Mode
+	if *flagDebug {
+		log.Println("[DEBUG] Modo Debug Ativado! Rastreando HTTP, Goroutines, I/O e Memória RAM em tempo real.")
+		go func() {
+			var mem runtime.MemStats
+			ticker := time.NewTicker(10 * time.Second)
+			for range ticker.C {
+				runtime.ReadMemStats(&mem)
+				log.Printf("[DEBUG MEM] RAM em Uso (Alloc): %d MB | Total Alocado: %d MB | Heap Sys: %d MB | NumGC: %d | Goroutines: %d\n",
+					mem.Alloc/1024/1024, mem.TotalAlloc/1024/1024, mem.Sys/1024/1024, mem.NumGC, runtime.NumGoroutine())
+			}
+		}()
+	}
 
 	log.Println("=========================================================")
 	log.Println("           ScanFile Pro - Windows Native Engine          ")

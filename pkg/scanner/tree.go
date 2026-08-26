@@ -322,9 +322,18 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		ModTime:     node.ModTime,
 		CreateTime:  node.CreateTime,
 		AccessTime:  node.AccessTime,
-		Files:       make([]*FileNode, len(node.Files)),
 	}
-	copy(summary.Files, node.Files)
+
+	// CRITICAL PERFORMANCE & MEMORY PROTECTION:
+	// Only copy direct files for the current folder being navigated (depth == 1).
+	// Subdirectories at depth > 1 are represented by their aggregated TotalSize and SubDirs.
+	// This prevents serializing 40+ million FileNode objects into multi-gigabyte JSONs that crash browser memory!
+	if currentDepth == 1 {
+		summary.Files = make([]*FileNode, len(node.Files))
+		copy(summary.Files, node.Files)
+	} else {
+		summary.Files = []*FileNode{}
+	}
 
 	var children []*DirNode
 	if currentDepth <= maxDepth {
@@ -346,6 +355,10 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		sort.Slice(subDirs, func(i, j int) bool {
 			return subDirs[i].TotalSize > subDirs[j].TotalSize
 		})
+		// Cap subdirs per folder to top 500 largest subfolders to keep UI instantly snappy
+		if len(subDirs) > 500 {
+			subDirs = subDirs[:500]
+		}
 		summary.SubDirs = subDirs
 	}
 
