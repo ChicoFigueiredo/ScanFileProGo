@@ -13,16 +13,18 @@ import (
 
 // ModelInfo describes an LLM model with its technical specifications.
 type ModelInfo struct {
-	ID             string   `json:"id"`             // e.g. "qwen2.5:1.5b", "gemma2:2b"
-	Name           string   `json:"name"`           // e.g. "Qwen 2.5 (1.5B)"
-	Family         string   `json:"family"`         // e.g. "qwen", "gemma", "llama", "deepseek"
-	Parameters     string   `json:"parameters"`     // e.g. "1.5B", "3B", "7B", "14B"
-	DownloadSize   string   `json:"downloadSize"`   // e.g. "986 MB", "4.7 GB"
+	ID             string   `json:"id"`             // e.g. "qwen3-vl:8b", "qwen2.5:1.5b"
+	Name           string   `json:"name"`           // e.g. "Qwen3-VL (8B) - Visão & Texto"
+	Family         string   `json:"family"`         // e.g. "qwen-vl", "qwen", "gemma", "llama", "deepseek"
+	Parameters     string   `json:"parameters"`     // e.g. "1.5B", "3B", "7B", "8B", "14B"
+	DownloadSize   string   `json:"downloadSize"`   // e.g. "986 MB", "5.4 GB"
 	DownloadBytes  int64    `json:"downloadBytes"`  // approx bytes on disk
-	RAMRequired    string   `json:"ramRequired"`    // e.g. "~1.2 GB RAM"
+	RAMRequired    string   `json:"ramRequired"`    // e.g. "~6.0 GB VRAM / RAM"
 	RAMBytes       int64    `json:"ramBytes"`       // approx RAM in bytes
 	ContextWindow  int      `json:"contextWindow"`  // e.g. 32768, 131072
 	SupportsTools  bool     `json:"supportsTools"`  // true if supports native Function/Tool Calling
+	SupportsVision bool     `json:"supportsVision"` // true if multimodal vision & OCR capable
+	IsPrimary      bool     `json:"isPrimary"`      // true for primary recommended model
 	IsInstalled    bool     `json:"isInstalled"`    // true if detected locally in Ollama/models
 	RecommendedFor string   `json:"recommendedFor"` // description of strengths
 	Provider       string   `json:"provider"`       // "ollama", "openrouter", "direct"
@@ -32,6 +34,39 @@ type ModelInfo struct {
 
 // CuratedLocalModels is the master list of top recommended local models up to 16GB.
 var CuratedLocalModels = []ModelInfo{
+	{
+		ID:             "qwen3-vl:8b",
+		Name:           "Qwen3-VL (8B) - Visão & Texto Multimodal (Primário SOTA)",
+		Family:         "qwen-vl",
+		Parameters:     "8B",
+		DownloadSize:   "5.4 GB",
+		DownloadBytes:  5400 * 1024 * 1024,
+		RAMRequired:    "~6.0 GB VRAM / RAM",
+		RAMBytes:       6000 * 1024 * 1024,
+		ContextWindow:  131072,
+		SupportsTools:  true,
+		SupportsVision: true,
+		IsPrimary:      true,
+		RecommendedFor: "⭐ MODELO PRIMÁRIO RECOMENDADO (SOTA): Leitura nativa de imagens, OCR avançado de documentos e PDFs escaneados, raciocínio espacial e gestão completa de arquivos com Tool Calling",
+		Provider:       "ollama",
+		MaxLimitGB:     8,
+	},
+	{
+		ID:             "qwen2.5-vl:7b",
+		Name:           "Qwen 2.5 VL (7B) - Visão Computacional SOTA",
+		Family:         "qwen-vl",
+		Parameters:     "7B",
+		DownloadSize:   "4.8 GB",
+		DownloadBytes:  4800 * 1024 * 1024,
+		RAMRequired:    "~5.5 GB VRAM / RAM",
+		RAMBytes:       5500 * 1024 * 1024,
+		ContextWindow:  131072,
+		SupportsTools:  true,
+		SupportsVision: true,
+		RecommendedFor: "Modelo Multimodal estabelecido para inspeção visual de fotos, blueprints, OCR em PDFs e comparação visual",
+		Provider:       "ollama",
+		MaxLimitGB:     8,
+	},
 	{
 		ID:             "qwen2.5:0.5b",
 		Name:           "Qwen 2.5 (0.5B) - Ultra Leve",

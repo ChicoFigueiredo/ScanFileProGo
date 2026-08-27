@@ -3448,11 +3448,23 @@
         ? '<span class="model-status-tag">✅ Pronto para Uso</span>' 
         : '<span class="model-status-tag not-installed">☁️ Download Necessário</span>';
 
+      const visionBadge = m.supportsVision 
+        ? '<span class="model-param-badge" style="background: rgba(16, 185, 129, 0.25); color: #34d399;" title="Capacidade Multimodal: Leitura de imagens, fotos e OCR em PDFs">👁️ Visão & OCR</span>' 
+        : '';
+
+      const primaryTag = m.isPrimary 
+        ? '<div style="font-size:0.7rem; font-weight:800; color:#fbbf24; margin-bottom:0.2rem;">⭐ MODELO PRIMÁRIO RECOMENDADO</div>' 
+        : '';
+
       return `
-        <div class="model-catalog-item ${isSelected ? 'active-model' : ''}" data-model-id="${m.id}">
+        <div class="model-catalog-item ${isSelected ? 'active-model' : ''} ${m.isPrimary ? 'primary-model-card' : ''}" data-model-id="${m.id}">
+          ${primaryTag}
           <div class="model-item-header">
             <span class="model-item-name">${m.name}</span>
-            <span class="model-param-badge">${m.parameters || 'SLM'}</span>
+            <div style="display:flex; gap:0.3rem;">
+              ${visionBadge}
+              <span class="model-param-badge">${m.parameters || 'SLM'}</span>
+            </div>
           </div>
           <div class="model-item-specs">
             <span>💾 ${m.downloadSize}</span>

@@ -61,7 +61,7 @@ func GetDefaultConfig() AppConfig {
 		UIZoom:                  100,
 		AIProvider:              "ollama",
 		AIOllamaEndpoint:        "http://127.0.0.1:11434",
-		AIOllamaModel:           "qwen2.5:1.5b",
+		AIOllamaModel:           "qwen3-vl:8b",
 		AIOpenRouterKey:         "",
 		AIOpenRouterModel:       "anthropic/claude-3.7-sonnet",
 		AIDryRunDefault:         true,

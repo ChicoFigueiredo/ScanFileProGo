@@ -2957,6 +2957,12 @@ body.ultra-height-mode .monitoring-table-wrapper {
   background: rgba(56, 189, 248, 0.1);
 }
 
+.model-catalog-item.primary-model-card {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: linear-gradient(135deg, rgba(31, 41, 55, 0.8), rgba(245, 158, 11, 0.08));
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.08);
+}
+
 .model-item-header {
   display: flex;
   justify-content: space-between;

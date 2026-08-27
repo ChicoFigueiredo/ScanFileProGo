@@ -858,19 +858,22 @@
             <!-- Messages Stream Container -->
             <div id="aiMessagesContainer" class="ai-messages-feed">
               <div class="ai-welcome-message">
-                <div class="ai-avatar">🤖</div>
+                <div class="ai-avatar">👁️</div>
                 <div class="ai-bubble">
-                  <h4>Olá! Sou o Assistente de Inteligência do ScanFile Pro.</h4>
-                  <p>Estou conectado ao protocolo <strong>Model Context Protocol (MCP)</strong> e posso operar com modelos locais no <strong>Ollama</strong> (até 16GB) ou modelos de ponta no <strong>OpenRouter</strong>.</p>
+                  <h4>Olá! Sou o Assistente Multimodal do ScanFile Pro (Qwen3-VL 8B).</h4>
+                  <p>Equipado com <strong>Visão Computacional e OCR nativos</strong> via Ollama e ferramentas MCP. Posso ler imagens, faturas, certidões, fotos, bancos SQLite e PDFs escaneados, propor limpezas inteligentes com simulação (Dry-Run) e organizar seu disco.</p>
                   <div class="ai-quick-prompts">
+                    <button class="ai-prompt-chip" data-prompt="Inspecione visualmente as imagens e fotos desta pasta e resuma o que são">
+                      👁️ Inspecionar Imagens &amp; Fotos
+                    </button>
+                    <button class="ai-prompt-chip" data-prompt="Faça OCR e extraia textos e valores dos documentos e faturas encontrados">
+                      📄 OCR em Faturas &amp; PDFs
+                    </button>
                     <button class="ai-prompt-chip" data-prompt="Ache todas as duplicatas maiores que 50MB e gere uma proposta de limpeza">
                       🔍 Achar duplicatas &gt; 50MB
                     </button>
                     <button class="ai-prompt-chip" data-prompt="Classifique os maiores arquivos deste disco por tipo e resuma o espaço">
-                      📊 Classificar maiores arquivos
-                    </button>
-                    <button class="ai-prompt-chip" data-prompt="Quais são os arquivos ociosos há mais de 1 ano que estão ocupando mais espaço?">
-                      ⏳ Arquivos ociosos &gt; 1 ano
+                      📊 Classificar Maiores Arquivos
                     </button>
                   </div>
                 </div>

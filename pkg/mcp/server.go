@@ -201,6 +201,49 @@ func GetOpenAIToolDefinitions() []ai.ToolDefinition {
 		{
 			Type: "function",
 			Function: ai.FunctionDefinition{
+				Name:        "analyze_image_visual",
+				Description: "Inspeciona visualmente uma imagem (PNG, JPG, WebP, etc.) usando visão multimodal (Qwen3-VL): descreve a cena, extrai texto legível via OCR (documentos/faturas/recibos), identifica o tipo e avalia a qualidade.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"required": []string{"filepath"},
+					"properties": map[string]interface{}{
+						"filepath": map[string]interface{}{
+							"type":        "string",
+							"description": "Caminho absoluto da imagem no disco",
+						},
+						"task": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"describe", "ocr", "classify", "quality"},
+							"description": "Tarefa específica de visão computacional (ex: 'ocr' para extração textual estrita)",
+						},
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: ai.FunctionDefinition{
+				Name:        "compare_visual_similarity",
+				Description: "Compara duas imagens visualmente com Qwen3-VL para identificar se são duplicatas visuais (mesmo que com resoluções, cortes ou formatos diferentes), recomendando qual manter.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"required": []string{"filepath_a", "filepath_b"},
+					"properties": map[string]interface{}{
+						"filepath_a": map[string]interface{}{
+							"type":        "string",
+							"description": "Caminho da primeira imagem",
+						},
+						"filepath_b": map[string]interface{}{
+							"type":        "string",
+							"description": "Caminho da segunda imagem a ser comparada",
+						},
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: ai.FunctionDefinition{
 				Name:        "write_file_metadata",
 				Description: "Grava tags e metadados categorizados para um arquivo ou hash no ScanFile.",
 				Parameters: map[string]interface{}{

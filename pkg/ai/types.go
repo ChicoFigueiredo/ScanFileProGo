@@ -13,6 +13,7 @@ const (
 type Message struct {
 	Role       string     `json:"role"` // "system", "user", "assistant", "tool"
 	Content    string     `json:"content"`
+	Images     []string   `json:"images,omitempty"` // Base64-encoded images for multimodal vision models like Qwen-VL
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"` // For tool responses

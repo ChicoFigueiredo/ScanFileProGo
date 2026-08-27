@@ -83,6 +83,26 @@ func (ste *serverToolsExecutor) ExecuteTool(ctx context.Context, name string, ar
 		data, _ := json.MarshalIndent(res, "", "  ")
 		return string(data), nil, nil
 
+	case "analyze_image_visual":
+		var params mcp.AnalyzeImageParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		res, err := ste.mcpCtx.AnalyzeImageVisual(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return string(data), nil, nil
+
+	case "compare_visual_similarity":
+		var params mcp.CompareVisualParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		res, err := ste.mcpCtx.CompareVisualSimilarity(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return string(data), nil, nil
+
 	case "write_file_metadata":
 		var params mcp.WriteMetadataParams
 		_ = json.Unmarshal([]byte(argsJSON), &params)
@@ -131,9 +151,11 @@ func NewAppServer(uiFS fs.FS) *AppServer {
 	fIdx := indexer.NewFolderDuplicateIndex()
 	sc := scanner.NewScanner(tree)
 	hEngine := hasher.NewHasher()
-	mcpCtx := mcp.NewMCPToolsContext(tree, idx, fIdx)
 	
 	cfg := config.LoadConfig()
+	ollamaClient := ai.NewOllamaClient(cfg.AIOllamaEndpoint)
+	mcpCtx := mcp.NewMCPToolsContext(tree, idx, fIdx, ollamaClient, cfg.AIOllamaModel)
+	
 	toolsDefs := mcp.GetOpenAIToolDefinitions()
 	agent := ai.NewAgentCoordinator(
 		cfg.AIOllamaEndpoint,

@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"scanfile/pkg/ai"
+	"scanfile/pkg/config"
 	"scanfile/pkg/mcp"
 	"scanfile/pkg/privileges"
 	"scanfile/pkg/server"
@@ -52,7 +54,9 @@ func main() {
 
 	// MCP Server Mode over Stdio
 	if *flagMCP {
-		mcpCtx := mcp.NewMCPToolsContext(nil, nil, nil)
+		cfg := config.LoadConfig()
+		ollamaClient := ai.NewOllamaClient(cfg.AIOllamaEndpoint)
+		mcpCtx := mcp.NewMCPToolsContext(nil, nil, nil, ollamaClient, cfg.AIOllamaModel)
 		if err := mcp.StartStdioServer(mcpCtx); err != nil {
 			log.Fatalf("Erro no servidor MCP: %v", err)
 		}

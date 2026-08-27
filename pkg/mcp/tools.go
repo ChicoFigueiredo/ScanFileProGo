@@ -3,8 +3,14 @@ package mcp
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,16 +21,19 @@ import (
 	"github.com/ledongthuc/pdf"
 	_ "modernc.org/sqlite"
 
+	"scanfile/pkg/ai"
 	"scanfile/pkg/indexer"
 	"scanfile/pkg/recycle"
 	"scanfile/pkg/scanner"
 )
 
-// MCPToolsContext holds references to ScanFile core engines.
+// MCPToolsContext holds references to ScanFile core engines and optional VL client.
 type MCPToolsContext struct {
-	Tree        *scanner.TreeManager
-	Index       *indexer.DuplicateIndex
-	FolderIndex *indexer.FolderDuplicateIndex
+	Tree         *scanner.TreeManager
+	Index        *indexer.DuplicateIndex
+	FolderIndex  *indexer.FolderDuplicateIndex
+	OllamaClient *ai.OllamaClient
+	OllamaModel  string
 	
 	// Active proposals cache for two-phase approval
 	proposalsMu sync.RWMutex
@@ -61,14 +70,19 @@ type ActionProposal struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
-// NewMCPToolsContext initializes the tools context.
-func NewMCPToolsContext(tree *scanner.TreeManager, idx *indexer.DuplicateIndex, fIdx *indexer.FolderDuplicateIndex) *MCPToolsContext {
+// NewMCPToolsContext initializes the tools context with optional vision model access.
+func NewMCPToolsContext(tree *scanner.TreeManager, idx *indexer.DuplicateIndex, fIdx *indexer.FolderDuplicateIndex, ollamaClient *ai.OllamaClient, ollamaModel string) *MCPToolsContext {
+	if ollamaModel == "" {
+		ollamaModel = "qwen3-vl:8b"
+	}
 	return &MCPToolsContext{
-		Tree:        tree,
-		Index:       idx,
-		FolderIndex: fIdx,
-		proposals:   make(map[string]*ActionProposal),
-		metadata:    make(map[string]FileMetadata),
+		Tree:         tree,
+		Index:        idx,
+		FolderIndex:  fIdx,
+		OllamaClient: ollamaClient,
+		OllamaModel:  ollamaModel,
+		proposals:    make(map[string]*ActionProposal),
+		metadata:     make(map[string]FileMetadata),
 	}
 }
 
@@ -277,7 +291,28 @@ func (tc *MCPToolsContext) AnalyzeFileContent(ctx context.Context, params Analyz
 		params.MaxLines = 60
 	}
 
-	// 1. PDF Deep Extraction
+	// 1. Image Inspection (Native Multimodal Vision with Qwen3-VL)
+	if isImageExtension(ext) {
+		imgRes, err := tc.AnalyzeImageVisual(ctx, AnalyzeImageParams{
+			FilePath: cleanPath,
+		})
+		if err == nil {
+			res.FileType = fmt.Sprintf("Imagem %s (%s)", strings.ToUpper(imgRes.Format), imgRes.AspectRatio)
+			res.MIMEType = "image/" + strings.TrimPrefix(ext, ".")
+			res.Summary = fmt.Sprintf("Imagem %s (%dx%d, %s). Categoria: %s. %s", 
+				imgRes.Format, imgRes.Width, imgRes.Height, imgRes.SizeDisplay, imgRes.SuggestedCategory, imgRes.VisualDescription)
+			if imgRes.DetectedTextOCR != "" {
+				res.SampleText = fmt.Sprintf("=== TEXTO DETECTADO VIA OCR (Qwen3-VL) ===\n%s", imgRes.DetectedTextOCR)
+			}
+			res.Metadata["dimensions"] = fmt.Sprintf("%dx%d", imgRes.Width, imgRes.Height)
+			res.Metadata["aspectRatio"] = imgRes.AspectRatio
+			res.Metadata["documentType"] = imgRes.DocumentType
+			res.Metadata["quality"] = imgRes.QualityAssessment
+			return res, nil
+		}
+	}
+
+	// 2. PDF Deep Extraction
 	if ext == ".pdf" {
 		pdfData, err := inspectPDF(cleanPath, params.MaxLines)
 		if err == nil {
@@ -290,7 +325,7 @@ func (tc *MCPToolsContext) AnalyzeFileContent(ctx context.Context, params Analyz
 		}
 	}
 
-	// 2. SQLite Database Inspection
+	// 3. SQLite Database Inspection
 	if ext == ".sqlite" || ext == ".db" || ext == ".sqlite3" {
 		sqliteData, err := inspectSQLite(ctx, cleanPath, params.SQLiteQuery)
 		if err == nil {
@@ -426,9 +461,276 @@ func inspectSQLite(ctx context.Context, dbPath string, userQuery string) (*SQLit
 	return res, nil
 }
 
+func isImageExtension(ext string) bool {
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".ico", ".svg":
+		return true
+	default:
+		return false
+	}
+}
+
 // =========================================================================
-// 3. TOOL: Write File Metadata & Tags
+// 2.1 TOOL: Analyze Image Visual (Qwen3-VL Multimodal Vision & OCR)
 // =========================================================================
+
+type AnalyzeImageParams struct {
+	FilePath      string `json:"filepath"`
+	Task          string `json:"task,omitempty"` // "describe", "ocr", "classify", "quality"
+	IncludeBase64 bool   `json:"include_base64,omitempty"`
+}
+
+type ImageVisualAnalysis struct {
+	FilePath          string `json:"filePath"`
+	FileName          string `json:"fileName"`
+	Format            string `json:"format"`
+	Width             int    `json:"width"`
+	Height            int    `json:"height"`
+	AspectRatio       string `json:"aspectRatio"`
+	SizeBytes         int64  `json:"sizeBytes"`
+	SizeDisplay       string `json:"sizeDisplay"`
+	VisualDescription string `json:"visualDescription"`
+	DetectedTextOCR   string `json:"detectedTextOCR,omitempty"`
+	DocumentType      string `json:"documentType"`
+	SuggestedCategory string `json:"suggestedCategory"`
+	QualityAssessment string `json:"qualityAssessment"`
+	Base64Data        string `json:"base64Data,omitempty"`
+}
+
+func (tc *MCPToolsContext) AnalyzeImageVisual(ctx context.Context, params AnalyzeImageParams) (*ImageVisualAnalysis, error) {
+	if params.FilePath == "" {
+		return nil, fmt.Errorf("filepath é obrigatório")
+	}
+
+	cleanPath := filepath.Clean(params.FilePath)
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("imagem não encontrada: %w", err)
+	}
+
+	format, width, height, b64, errImg := decodeImageMetaAndBase64(cleanPath, 15*1024*1024)
+	if errImg != nil {
+		format = strings.TrimPrefix(filepath.Ext(cleanPath), ".")
+	}
+
+	aspectRatio := "Desconhecido"
+	if width > 0 && height > 0 {
+		ratio := float64(width) / float64(height)
+		if ratio >= 1.7 && ratio <= 1.85 {
+			aspectRatio = "16:9 (Widescreen)"
+		} else if ratio >= 1.3 && ratio <= 1.4 {
+			aspectRatio = "4:3 (Padrão Fotográfico)"
+		} else if ratio >= 0.95 && ratio <= 1.05 {
+			aspectRatio = "1:1 (Quadrado / Ícone)"
+		} else if ratio < 0.65 {
+			aspectRatio = "9:16 (Vertical / Smartphone / Story)"
+		} else {
+			aspectRatio = fmt.Sprintf("%.2f:1 (%dx%d)", ratio, width, height)
+		}
+	}
+
+	res := &ImageVisualAnalysis{
+		FilePath:          cleanPath,
+		FileName:          info.Name(),
+		Format:            strings.ToUpper(format),
+		Width:             width,
+		Height:            height,
+		AspectRatio:       aspectRatio,
+		SizeBytes:         info.Size(),
+		SizeDisplay:       formatBytes(info.Size()),
+		DocumentType:      "Imagem / Fotografia",
+		SuggestedCategory: "Mídia Visual",
+		QualityAssessment: "Resolução e metadados válidos",
+	}
+
+	if params.IncludeBase64 {
+		res.Base64Data = b64
+	}
+
+	// If Ollama is available, query Qwen3-VL directly with vision
+	if tc.OllamaClient != nil && b64 != "" {
+		model := tc.OllamaModel
+		if model == "" {
+			model = "qwen3-vl:8b"
+		}
+
+		prompt := fmt.Sprintf("Você é o modelo multimodal Qwen3-VL. Analise esta imagem (%s, %dx%d, %s) com máxima precisão e responda em português estruturado:\n1. Descrição visual detalhada do conteúdo da imagem/documento;\n2. Transcreva todo o texto legível via OCR (se houver notas fiscais, placas, títulos, tabelas ou recibos);\n3. Tipo de arquivo (ex: Documento/Fatura, Foto Pessoal, Screenshot de Software, Logotipo, Wallpaper, Diagrama Técnico);\n4. Sugestão de categoria para organização de disco;\n5. Qualidade visual e se parece duplicata/descartável.", info.Name(), width, height, formatBytes(info.Size()))
+
+		if params.Task == "ocr" {
+			prompt = "Extraia todo o texto visível nesta imagem com máxima fidelidade (OCR). Se for um documento fiscal, certidão ou fatura, transcreva os campos essenciais."
+		}
+
+		msg := ai.Message{
+			Role:    "user",
+			Content: prompt,
+			Images:  []string{b64},
+		}
+
+		resp, errChat := tc.OllamaClient.Chat(ctx, model, []ai.Message{msg}, nil)
+		if errChat == nil && resp != nil && resp.Content != "" {
+			res.VisualDescription = resp.Content
+			// Check if contains OCR text
+			if strings.Contains(strings.ToLower(resp.Content), "texto") || strings.Contains(strings.ToLower(resp.Content), "ocr") {
+				res.DetectedTextOCR = resp.Content
+			}
+			if strings.Contains(strings.ToLower(resp.Content), "fatura") || strings.Contains(strings.ToLower(resp.Content), "documento") || strings.Contains(strings.ToLower(resp.Content), "recibo") {
+				res.DocumentType = "Documento Digital / Recibo"
+				res.SuggestedCategory = "Documentos e Finanças"
+			} else if strings.Contains(strings.ToLower(resp.Content), "screenshot") || strings.Contains(strings.ToLower(resp.Content), "captura") {
+				res.DocumentType = "Screenshot de Tela"
+				res.SuggestedCategory = "Capturas Temporárias"
+			} else if strings.Contains(strings.ToLower(resp.Content), "foto") || strings.Contains(strings.ToLower(resp.Content), "paisagem") || strings.Contains(strings.ToLower(resp.Content), "pessoa") {
+				res.DocumentType = "Fotografia"
+				res.SuggestedCategory = "Fotos e Lembranças"
+			}
+		} else {
+			res.VisualDescription = fmt.Sprintf("Imagem %s (%dx%d, %s, %s). Pronta para inspeção visual multimodal.", res.Format, res.Width, res.Height, res.AspectRatio, res.SizeDisplay)
+		}
+	} else {
+		res.VisualDescription = fmt.Sprintf("Imagem %s (%dx%d, %s, %s). Metadados de geometria e formato extraídos com sucesso.", res.Format, res.Width, res.Height, res.AspectRatio, res.SizeDisplay)
+	}
+
+	return res, nil
+}
+
+// =========================================================================
+// 2.2 TOOL: Compare Visual Similarity (Near-Duplicates with Qwen3-VL)
+// =========================================================================
+
+type CompareVisualParams struct {
+	FilePathA string `json:"filepath_a"`
+	FilePathB string `json:"filepath_b"`
+}
+
+type ImageBrief struct {
+	FilePath    string `json:"filePath"`
+	Dimensions  string `json:"dimensions"`
+	SizeBytes   int64  `json:"sizeBytes"`
+	SizeDisplay string `json:"sizeDisplay"`
+	Format      string `json:"format"`
+}
+
+type VisualComparisonResult struct {
+	ImageA            ImageBrief `json:"imageA"`
+	ImageB            ImageBrief `json:"imageB"`
+	IsVisualDuplicate bool       `json:"isVisualDuplicate"`
+	Confidence        float64    `json:"confidence"`
+	VisualDifferences string     `json:"visualDifferences"`
+	RecommendedKeep   string     `json:"recommendedKeep"` // "IMAGE_A", "IMAGE_B", "BOTH"
+	Rationale         string     `json:"rationale"`
+}
+
+func (tc *MCPToolsContext) CompareVisualSimilarity(ctx context.Context, params CompareVisualParams) (*VisualComparisonResult, error) {
+	if params.FilePathA == "" || params.FilePathB == "" {
+		return nil, fmt.Errorf("filepath_a e filepath_b são obrigatórios")
+	}
+
+	pathA := filepath.Clean(params.FilePathA)
+	pathB := filepath.Clean(params.FilePathB)
+
+	infoA, errA := os.Stat(pathA)
+	infoB, errB := os.Stat(pathB)
+	if errA != nil || errB != nil {
+		return nil, fmt.Errorf("falha ao acessar arquivos para comparação visual: %v / %v", errA, errB)
+	}
+
+	fmtA, wA, hA, b64A, _ := decodeImageMetaAndBase64(pathA, 10*1024*1024)
+	fmtB, wB, hB, b64B, _ := decodeImageMetaAndBase64(pathB, 10*1024*1024)
+
+	res := &VisualComparisonResult{
+		ImageA: ImageBrief{
+			FilePath:    pathA,
+			Dimensions:  fmt.Sprintf("%dx%d", wA, hA),
+			SizeBytes:   infoA.Size(),
+			SizeDisplay: formatBytes(infoA.Size()),
+			Format:      strings.ToUpper(fmtA),
+		},
+		ImageB: ImageBrief{
+			FilePath:    pathB,
+			Dimensions:  fmt.Sprintf("%dx%d", wB, hB),
+			SizeBytes:   infoB.Size(),
+			SizeDisplay: formatBytes(infoB.Size()),
+			Format:      strings.ToUpper(fmtB),
+		},
+		RecommendedKeep: "IMAGE_A",
+	}
+
+	if wA*hA < wB*hB {
+		res.RecommendedKeep = "IMAGE_B"
+	}
+
+	// Query Qwen3-VL with both images
+	if tc.OllamaClient != nil && b64A != "" && b64B != "" {
+		model := tc.OllamaModel
+		if model == "" {
+			model = "qwen3-vl:8b"
+		}
+
+		prompt := fmt.Sprintf("Você é o especialista visual Qwen3-VL comparando duas imagens de disco:\n- Imagem 1: %s (%dx%d, %s)\n- Imagem 2: %s (%dx%d, %s)\n\nResponda em português:\n1. Elas são a mesma imagem/conteúdo (duplicata visual / cópia redimensionada)? Responda SIM ou NÃO.\n2. Quais as diferenças visuais identificadas (qualidade, resolução, cortes, compressão)?\n3. Qual deve ser mantida no disco (IMAGE_A ou IMAGE_B) e qual pode ser reciclada?", filepath.Base(pathA), wA, hA, formatBytes(infoA.Size()), filepath.Base(pathB), wB, hB, formatBytes(infoB.Size()))
+
+		msg := ai.Message{
+			Role:    "user",
+			Content: prompt,
+			Images:  []string{b64A, b64B},
+		}
+
+		resp, errChat := tc.OllamaClient.Chat(ctx, model, []ai.Message{msg}, nil)
+		if errChat == nil && resp != nil {
+			res.Rationale = resp.Content
+			lower := strings.ToLower(resp.Content)
+			if strings.Contains(lower, "sim") || strings.Contains(lower, "mesma imagem") || strings.Contains(lower, "duplicata") {
+				res.IsVisualDuplicate = true
+				res.Confidence = 0.95
+			} else {
+				res.IsVisualDuplicate = false
+				res.Confidence = 0.85
+			}
+			res.VisualDifferences = resp.Content
+		}
+	} else {
+		// Fallback comparison by dimension and size
+		if wA == wB && hA == hB && infoA.Size() == infoB.Size() {
+			res.IsVisualDuplicate = true
+			res.Confidence = 0.90
+			res.Rationale = "Mesma dimensão e tamanho exato de arquivo."
+		} else {
+			res.IsVisualDuplicate = false
+			res.Confidence = 0.60
+			res.Rationale = "Dimensões ou formatos distintos. Recomendada inspeção com Qwen3-VL ativo."
+		}
+	}
+
+	return res, nil
+}
+
+func decodeImageMetaAndBase64(filePath string, maxBytes int64) (format string, width, height int, b64 string, err error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", 0, 0, "", err
+	}
+	defer f.Close()
+
+	cfg, fmtName, errCfg := image.DecodeConfig(f)
+	if errCfg == nil {
+		format = fmtName
+		width = cfg.Width
+		height = cfg.Height
+	}
+
+	_, _ = f.Seek(0, 0)
+	var r io.Reader = f
+	if maxBytes > 0 {
+		r = io.LimitReader(f, maxBytes)
+	}
+
+	data, errRead := io.ReadAll(r)
+	if errRead != nil {
+		return format, width, height, "", errRead
+	}
+
+	b64 = base64.StdEncoding.EncodeToString(data)
+	return format, width, height, b64, nil
+}
 
 type WriteMetadataParams struct {
 	Target   string   `json:"target"` // filepath or hash
