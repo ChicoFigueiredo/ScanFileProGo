@@ -26,12 +26,30 @@
     folderDuplicatesData: null,
     folderComparisonData: null,
     folderDiffFilter: 'ALL',
+    dupOffset: 0,
+    dupLimit: 50,
+    dupGroups: [],
+    dupTotalGroups: 0,
+    folderDupOffset: 0,
+    folderDupLimit: 50,
+    folderDupGroups: [],
+    folderDupTotalGroups: 0,
+    isLoadingDups: false,
+    isLoadingFolderDups: false,
     selectedFilesForDelete: new Map(), // Map<path, size>
     selectedIdleFiles: new Map(),      // Map<path, size>
     idleData: null,
     eventLogs: [],
     sseSource: null,
     uiZoom: 100,
+    ai: {
+      provider: 'ollama',
+      selectedModel: 'qwen2.5:1.5b',
+      modelsCatalog: null,
+      chatHistory: [],
+      isGenerating: false,
+      isPulling: false,
+    },
   };
 
   // DOM Elements
@@ -52,15 +70,28 @@
     hashAlgo: document.getElementById('hashAlgo'),
     hashMode: document.getElementById('hashMode'),
     minFileSize: document.getElementById('minFileSize'),
+    autoSaveInterval: document.getElementById('autoSaveInterval'),
+    autoSaveBanner: document.getElementById('autoSaveBanner'),
+    autoSaveDetailsText: document.getElementById('autoSaveDetailsText'),
+    btnBannerRestore: document.getElementById('btnBannerRestore'),
+    btnBannerQuickScan: document.getElementById('btnBannerQuickScan'),
+    btnBannerDismiss: document.getElementById('btnBannerDismiss'),
     btnStartScan: document.getElementById('btnStartScan'),
+    btnQuickScan: document.getElementById('btnQuickScan'),
     btnCancelScan: document.getElementById('btnCancelScan'),
     progressHUD: document.getElementById('progressHUD'),
     hudPhaseBadge: document.getElementById('hudPhaseBadge'),
+    hudQuickScanBadge: document.getElementById('hudQuickScanBadge'),
+    hudAutoSaveBadge: document.getElementById('hudAutoSaveBadge'),
     hudErrorsBadge: document.getElementById('hudErrorsBadge'),
     statFiles: document.getElementById('statFiles'),
     statDirs: document.getElementById('statDirs'),
     statBytes: document.getElementById('statBytes'),
     statAllocatedBytes: document.getElementById('statAllocatedBytes'),
+    boxReusedFiles: document.getElementById('boxReusedFiles'),
+    statReusedFiles: document.getElementById('statReusedFiles'),
+    boxNewModifiedFiles: document.getElementById('boxNewModifiedFiles'),
+    statNewModifiedFiles: document.getElementById('statNewModifiedFiles'),
     statCompressedCount: document.getElementById('statCompressedCount'),
     statCompressedSaved: document.getElementById('statCompressedSaved'),
     statSpeed: document.getElementById('statSpeed'),
@@ -89,6 +120,7 @@
     btnResetZoom: document.getElementById('btnResetZoom'),
     treemapContainer: document.getElementById('treemapContainer'),
     treemapCanvas: document.getElementById('treemapCanvas'),
+    treemapLegend: document.getElementById('treemapLegend'),
     treemapTooltip: document.getElementById('treemapTooltip'),
     treemapContextMenu: document.getElementById('treemapContextMenu'),
     ctxZoomIn: document.getElementById('ctxZoomIn'),
@@ -96,7 +128,11 @@
     ctxCopyPath: document.getElementById('ctxCopyPath'),
     ctxRecycle: document.getElementById('ctxRecycle'),
     treemapLegendBar: document.getElementById('treemapLegendBar'),
-    // Duplicates elements
+    btnViewSplit: document.getElementById('btnViewSplit'),
+    btnViewTreemap: document.getElementById('btnViewTreemap'),
+    btnViewTable: document.getElementById('btnViewTable'),
+    treemapFilterInput: document.getElementById('treemapFilterInput'),
+    // Duplicates tab elements
     dupCountBadge: document.getElementById('dupCountBadge'),
     dupTotalGroups: document.getElementById('dupTotalGroups'),
     dupTotalFiles: document.getElementById('dupTotalFiles'),
@@ -105,12 +141,23 @@
     dupSortBy: document.getElementById('dupSortBy'),
     dupMinSize: document.getElementById('dupMinSize'),
     dupSearch: document.getElementById('dupSearch'),
+    duplicatesSortBy: document.getElementById('duplicatesSortBy'),
+    duplicatesMinSize: document.getElementById('duplicatesMinSize'),
+    duplicatesExtFilter: document.getElementById('duplicatesExtFilter'),
+    duplicatesSearch: document.getElementById('duplicatesSearch'),
+    btnFilterDuplicates: document.getElementById('btnFilterDuplicates'),
     btnSelectNewest: document.getElementById('btnSelectNewest'),
     btnSelectOldest: document.getElementById('btnSelectOldest'),
+    dupSelectAllOldestBtn: document.getElementById('dupSelectAllOldestBtn'),
+    dupSelectAllNewestBtn: document.getElementById('dupSelectAllNewestBtn'),
     btnClearSelection: document.getElementById('btnClearSelection'),
+    dupClearSelectionBtn: document.getElementById('dupClearSelectionBtn'),
     btnRecycleSelected: document.getElementById('btnRecycleSelected'),
+    btnDeleteSelectedDups: document.getElementById('btnDeleteSelectedDups'),
     duplicatesContainer: document.getElementById('duplicatesContainer'),
-    // Folder duplicate & comparison elements
+    duplicatesList: document.getElementById('duplicatesList'),
+    dupSummaryText: document.getElementById('dupSummaryText'),
+    // Folder duplicates and compare elements
     folderDupCountBadge: document.getElementById('folderDupCountBadge'),
     dupFolderTotalGroups: document.getElementById('dupFolderTotalGroups'),
     dupFolderTotalCount: document.getElementById('dupFolderTotalCount'),
@@ -118,14 +165,20 @@
     dupFolderSortBy: document.getElementById('dupFolderSortBy'),
     dupFolderMinSize: document.getElementById('dupFolderMinSize'),
     dupFolderSearch: document.getElementById('dupFolderSearch'),
+    chkFolderTopLevelOnly: document.getElementById('chkFolderTopLevelOnly'),
     btnRefreshFolderDuplicates: document.getElementById('btnRefreshFolderDuplicates'),
     folderDuplicatesContainer: document.getElementById('folderDuplicatesContainer'),
+    folderDupMinSize: document.getElementById('folderDupMinSize'),
+    folderDupSortBy: document.getElementById('folderDupSortBy'),
+    folderDupSearch: document.getElementById('folderDupSearch'),
+    btnFilterFolderDuplicates: document.getElementById('btnFilterFolderDuplicates'),
+    folderDupSummaryText: document.getElementById('folderDupSummaryText'),
     comparePathA: document.getElementById('comparePathA'),
     comparePathB: document.getElementById('comparePathB'),
     btnSwapComparePaths: document.getElementById('btnSwapComparePaths'),
     btnRunFolderCompare: document.getElementById('btnRunFolderCompare'),
     folderCompareResults: document.getElementById('folderCompareResults'),
-    // Idle / Stale files elements
+    // Idle files tab elements
     idleTotalCount: document.getElementById('idleTotalCount'),
     idleTotalBytes: document.getElementById('idleTotalBytes'),
     idleSelectedCount: document.getElementById('idleSelectedCount'),
@@ -134,6 +187,7 @@
     idleMinSize: document.getElementById('idleMinSize'),
     idleSearch: document.getElementById('idleSearch'),
     btnRefreshIdle: document.getElementById('btnRefreshIdle'),
+    idleSummaryText: document.getElementById('idleSummaryText'),
     btnSelectAllIdle: document.getElementById('btnSelectAllIdle'),
     btnClearIdleSelection: document.getElementById('btnClearIdleSelection'),
     btnRecycleIdleSelected: document.getElementById('btnRecycleIdleSelected'),
@@ -157,6 +211,28 @@
     eventLogsTableBody: document.getElementById('eventLogsTableBody'),
     btnClearLogs: document.getElementById('btnClearLogs'),
     toastContainer: document.getElementById('toastContainer'),
+    // AI Assistant Elements
+    aiModelSelect: document.getElementById('aiModelSelect'),
+    btnPullSelectedModel: document.getElementById('btnPullSelectedModel'),
+    btnOpenAIConfigModal: document.getElementById('btnOpenAIConfigModal'),
+    aiConfigModal: document.getElementById('aiConfigModal'),
+    aiOllamaEndpointInput: document.getElementById('aiOllamaEndpointInput'),
+    aiOpenRouterKeyInput: document.getElementById('aiOpenRouterKeyInput'),
+    aiDryRunDefaultCheckbox: document.getElementById('aiDryRunDefaultCheckbox'),
+    btnSaveAIConfig: document.getElementById('btnSaveAIConfig'),
+    aiPullProgressContainer: document.getElementById('aiPullProgressContainer'),
+    pullModelTitle: document.getElementById('pullModelTitle'),
+    pullModelPercent: document.getElementById('pullModelPercent'),
+    pullProgressBar: document.getElementById('pullProgressBar'),
+    pullModelStatus: document.getElementById('pullModelStatus'),
+    aiMessagesContainer: document.getElementById('aiMessagesContainer'),
+    aiPromptInput: document.getElementById('aiPromptInput'),
+    btnSendAIMessage: document.getElementById('btnSendAIMessage'),
+    btnClearAIChat: document.getElementById('btnClearAIChat'),
+    aiModelsList: document.getElementById('aiModelsList'),
+    ollamaStatusDot: document.getElementById('ollamaStatusDot'),
+    openrouterStatusDot: document.getElementById('openrouterStatusDot'),
+    directStatusDot: document.getElementById('directStatusDot'),
   };
 
   // Helper: Format Bytes (e.g. 1024 -> 1.00 KB)
@@ -196,16 +272,18 @@
 
   // Initialize
   async function init() {
-    setupTabs();
-    setupEventListeners();
-    setupTreemap();
-    setupCacheModals();
-    setupFolderComparator();
-    fetchPrivileges();
-    await loadSavedConfig();
-    fetchDrives();
-    setupSSE();
-    fetchEventLogs();
+    try { setupTabs(); } catch (e) { console.error('Error in setupTabs:', e); }
+    try { setupEventListeners(); } catch (e) { console.error('Error in setupEventListeners:', e); }
+    try { setupTreemap(); } catch (e) { console.error('Error in setupTreemap:', e); }
+    try { setupCacheModals(); } catch (e) { console.error('Error in setupCacheModals:', e); }
+    try { setupFolderComparator(); } catch (e) { console.error('Error in setupFolderComparator:', e); }
+    try { setupAIAssistant(); } catch (e) { console.error('Error in setupAIAssistant:', e); }
+    try { fetchPrivileges(); } catch (e) { console.error('Error in fetchPrivileges:', e); }
+    try { await loadSavedConfig(); } catch (e) { console.error('Error in loadSavedConfig:', e); }
+    try { fetchDrives(); } catch (e) { console.error('Error in fetchDrives:', e); }
+    try { setupSSE(); } catch (e) { console.error('Error in setupSSE:', e); }
+    try { fetchEventLogs(); } catch (e) { console.error('Error in fetchEventLogs:', e); }
+    try { checkAutoSaveStatus(); } catch (e) { console.error('Error in checkAutoSaveStatus:', e); }
   }
 
   // Tabs Switching
@@ -213,11 +291,14 @@
     document.querySelectorAll('.nav-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         const targetTab = btn.getAttribute('data-tab');
+        const targetPane = document.getElementById(targetTab);
+        if (!targetPane) return;
+
         document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
         
         btn.classList.add('active');
-        document.getElementById(targetTab).classList.add('active');
+        targetPane.classList.add('active');
         state.currentTab = targetTab;
 
         if (targetTab === 'treeTab') {
@@ -231,6 +312,8 @@
           loadAnalytics();
         } else if (targetTab === 'idleTab') {
           loadIdleFiles();
+        } else if (targetTab === 'aiTab') {
+          loadAICatalog();
         }
       });
     });
@@ -241,29 +324,67 @@
     if (elements.btnElevateAdmin) {
       elements.btnElevateAdmin.addEventListener('click', elevateToAdmin);
     }
-    elements.btnRefreshDrives.addEventListener('click', fetchDrives);
+    if (elements.btnRefreshDrives) {
+      elements.btnRefreshDrives.addEventListener('click', fetchDrives);
+    }
     
-    elements.btnSelectAllDrives.addEventListener('click', () => {
-      const allSelected = state.selectedRoots.size === state.drives.length;
-      state.selectedRoots.clear();
-      if (!allSelected) {
-        state.drives.forEach(d => state.selectedRoots.add(d.letter));
-      }
-      renderDrivesGrid();
-      saveCurrentConfig();
-    });
+    if (elements.btnSelectAllDrives) {
+      elements.btnSelectAllDrives.addEventListener('click', () => {
+        if (!state.drives) return;
+        const allSelected = state.selectedRoots.size === state.drives.length;
+        state.selectedRoots.clear();
+        if (!allSelected) {
+          state.drives.forEach(d => state.selectedRoots.add(d.letter));
+        }
+        renderDrivesGrid();
+        saveCurrentConfig();
+      });
+    }
 
-    elements.btnStartScan.addEventListener('click', () => {
-      saveCurrentConfig();
-      startScan();
-    });
-    elements.btnCancelScan.addEventListener('click', cancelScan);
+    if (elements.btnStartScan) {
+      elements.btnStartScan.addEventListener('click', () => {
+        saveCurrentConfig();
+        startScan(false);
+      });
+    }
+
+    if (elements.btnQuickScan) {
+      elements.btnQuickScan.addEventListener('click', () => {
+        saveCurrentConfig();
+        startScan(true);
+      });
+    }
+
+    // AutoSave Detection Banner Event Listeners
+    if (elements.btnBannerRestore) {
+      elements.btnBannerRestore.addEventListener('click', () => restoreAutoSave());
+    }
+    if (elements.btnBannerQuickScan) {
+      elements.btnBannerQuickScan.addEventListener('click', async () => {
+        try {
+          await restoreAutoSave();
+          startScan(true);
+        } catch (e) {
+          console.error(e);
+        }
+      });
+    }
+    if (elements.btnBannerDismiss) {
+      elements.btnBannerDismiss.addEventListener('click', () => {
+        if (elements.autoSaveBanner) elements.autoSaveBanner.classList.add('hidden');
+      });
+    }
+
+    if (elements.btnCancelScan) {
+      elements.btnCancelScan.addEventListener('click', cancelScan);
+    }
 
     // Save preferences on scan configuration change
     if (elements.workerThreads) elements.workerThreads.addEventListener('change', () => saveCurrentConfig());
     if (elements.hashAlgo) elements.hashAlgo.addEventListener('change', () => saveCurrentConfig());
     if (elements.hashMode) elements.hashMode.addEventListener('change', () => saveCurrentConfig());
     if (elements.minFileSize) elements.minFileSize.addEventListener('change', () => saveCurrentConfig());
+    if (elements.autoSaveInterval) elements.autoSaveInterval.addEventListener('change', () => saveCurrentConfig());
 
     // Tree and Treemap Navigation Listeners
     if (elements.btnTreeRefresh) {
@@ -320,21 +441,26 @@
       });
     }
 
-    elements.dupSortBy.addEventListener('change', () => {
-      loadDuplicates();
-      saveCurrentConfig();
-    });
-    elements.dupMinSize.addEventListener('change', () => {
-      loadDuplicates();
-      saveCurrentConfig();
-    });
-    elements.dupSearch.addEventListener('input', debounce(loadDuplicates, 300));
+    if (elements.dupSortBy) {
+      elements.dupSortBy.addEventListener('change', () => {
+        loadDuplicates();
+        saveCurrentConfig();
+      });
+    }
+    if (elements.dupMinSize) {
+      elements.dupMinSize.addEventListener('change', () => {
+        loadDuplicates();
+        saveCurrentConfig();
+      });
+    }
+    if (elements.dupSearch) {
+      elements.dupSearch.addEventListener('input', debounce(loadDuplicates, 300));
+    }
 
-    elements.btnSelectNewest.addEventListener('click', () => selectDuplicatesByStrategy('keep_newest'));
-    elements.btnSelectOldest.addEventListener('click', () => selectDuplicatesByStrategy('keep_oldest'));
-    elements.btnClearSelection.addEventListener('click', clearSelection);
-
-    elements.btnRecycleSelected.addEventListener('click', recycleSelectedFiles);
+    if (elements.btnSelectNewest) elements.btnSelectNewest.addEventListener('click', () => selectDuplicatesByStrategy('keep_newest'));
+    if (elements.btnSelectOldest) elements.btnSelectOldest.addEventListener('click', () => selectDuplicatesByStrategy('keep_oldest'));
+    if (elements.btnClearSelection) elements.btnClearSelection.addEventListener('click', clearSelection);
+    if (elements.btnRecycleSelected) elements.btnRecycleSelected.addEventListener('click', recycleSelectedFiles);
 
     // Idle files listeners
     if (elements.idleMinAge) elements.idleMinAge.addEventListener('change', () => {
@@ -359,13 +485,41 @@
 
     // Folder Duplicate listeners
     if (elements.dupFolderSortBy) elements.dupFolderSortBy.addEventListener('change', () => {
-      loadFolderDuplicates();
+      loadFolderDuplicates(true);
       saveCurrentConfig();
     });
     if (elements.dupFolderMinSize) elements.dupFolderMinSize.addEventListener('change', () => {
-      loadFolderDuplicates();
+      loadFolderDuplicates(true);
       saveCurrentConfig();
     });
+
+    // Infinite scroll on Duplicates Container
+    if (elements.duplicatesContainer) {
+      elements.duplicatesContainer.addEventListener('scroll', () => {
+        const c = elements.duplicatesContainer;
+        if (c.scrollTop + c.clientHeight >= c.scrollHeight - 160) {
+          if (!state.isLoadingDups && state.dupGroups && state.dupGroups.length < state.dupTotalGroups) {
+            state.dupOffset += (state.dupLimit || 50);
+            state.dupLimit = 50;
+            loadDuplicates(false);
+          }
+        }
+      });
+    }
+
+    // Infinite scroll on Folder Duplicates Container
+    if (elements.folderDuplicatesContainer) {
+      elements.folderDuplicatesContainer.addEventListener('scroll', () => {
+        const c = elements.folderDuplicatesContainer;
+        if (c.scrollTop + c.clientHeight >= c.scrollHeight - 160) {
+          if (!state.isLoadingFolderDups && state.folderDupGroups && state.folderDupGroups.length < state.folderDupTotalGroups) {
+            state.folderDupOffset += (state.folderDupLimit || 50);
+            state.folderDupLimit = 50;
+            loadFolderDuplicates(false);
+          }
+        }
+      });
+    }
 
     // UI Zoom Control Listeners
     if (elements.btnZoomIn) {
@@ -394,11 +548,13 @@
       }
     });
 
-    elements.btnClearLogs.addEventListener('click', () => {
-      state.eventLogs = [];
-      renderEventLogs();
-      elements.eventCountBadge.textContent = '0';
-    });
+    if (elements.btnClearLogs) {
+      elements.btnClearLogs.addEventListener('click', () => {
+        state.eventLogs = [];
+        renderEventLogs();
+        if (elements.eventCountBadge) elements.eventCountBadge.textContent = '0';
+      });
+    }
   }
 
   // Set UI Zoom percentage
@@ -436,6 +592,7 @@
       if (cfg.hashAlgorithm && elements.hashAlgo) elements.hashAlgo.value = cfg.hashAlgorithm;
       if (cfg.hashMode && elements.hashMode) elements.hashMode.value = cfg.hashMode;
       if (cfg.minFileSize !== undefined && elements.minFileSize) elements.minFileSize.value = String(cfg.minFileSize);
+      if (cfg.autoSaveIntervalMinutes !== undefined && elements.autoSaveInterval) elements.autoSaveInterval.value = String(cfg.autoSaveIntervalMinutes);
 
       if (cfg.treemapDepth && elements.treemapDepth) {
         elements.treemapDepth.value = String(cfg.treemapDepth);
@@ -481,6 +638,7 @@
       hashAlgorithm: elements.hashAlgo ? elements.hashAlgo.value : 'xxhash',
       hashMode: elements.hashMode ? elements.hashMode.value : 'smart',
       minFileSize: elements.minFileSize ? parseInt(elements.minFileSize.value, 10) : 1,
+      autoSaveIntervalMinutes: elements.autoSaveInterval ? parseInt(elements.autoSaveInterval.value, 10) : 5,
       treemapDepth: state.treemap ? state.treemap.depth : 5,
       treemapColorMode: state.treemap ? state.treemap.colorMode : 'extension',
       treemapViewMode: state.treemap ? state.treemap.viewMode : 'split',
@@ -602,7 +760,7 @@
                 <div class="drive-label">${drive.volumeLabel || 'Disco Local'} (${drive.fileSystem || 'NTFS'})</div>
               </div>
             </div>
-            <input type="checkbox" class="drive-checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()">
+            <input type="checkbox" class="drive-checkbox" ${isSelected ? 'checked' : ''} style="pointer-events: none;">
           </div>
 
           <div class="drive-meta-row">
@@ -637,12 +795,21 @@
     });
   }
 
-  // Start Scan
-  async function startScan() {
+  // Start Scan (Regular or QuickScan)
+  async function startScan(isQuick = false) {
     if (state.selectedRoots.size === 0) {
-      showToast('Por favor, selecione ao menos um disco para varrer!', 'danger');
+      document.querySelectorAll('.drive-card.selected').forEach(c => {
+        const l = c.getAttribute('data-letter');
+        if (l) state.selectedRoots.add(l);
+      });
+    }
+
+    if (state.selectedRoots.size === 0) {
+      showToast('Por favor, selecione ao menos uma unidade de disco para varrer!', 'warning');
       return;
     }
+
+    const autoSaveMins = elements.autoSaveInterval ? parseInt(elements.autoSaveInterval.value, 10) : 5;
 
     const payload = {
       roots: Array.from(state.selectedRoots),
@@ -650,6 +817,9 @@
       hashAlgorithm: elements.hashAlgo.value,
       hashAllFiles: elements.hashMode.value === 'all',
       minSizeForHash: parseInt(elements.minFileSize.value, 10),
+      quickScanMode: isQuick,
+      autoSaveIntervalMinutes: autoSaveMins,
+      autoSaveOnComplete: true,
     };
 
     try {
@@ -663,12 +833,18 @@
 
       state.isScanning = true;
       elements.btnStartScan.classList.add('hidden');
+      if (elements.btnQuickScan) elements.btnQuickScan.classList.add('hidden');
       elements.btnCancelScan.classList.remove('hidden');
       elements.progressHUD.classList.remove('hidden');
+      if (elements.autoSaveBanner) elements.autoSaveBanner.classList.add('hidden');
       elements.liveBadge.className = 'status-badge scanning';
-      elements.liveStatusText.textContent = 'Varrendo Discos...';
+      elements.liveStatusText.textContent = isQuick ? '⚡ Quick Scan...' : 'Varrendo Discos...';
 
-      showToast('Varredura multithread iniciada com sucesso!', 'success');
+      if (isQuick) {
+        showToast('⚡ Quick Scan iniciado! Reaproveitando hashes de arquivos inalterados.', 'info');
+      } else {
+        showToast('Varredura multithread iniciada com sucesso!', 'success');
+      }
     } catch (err) {
       showToast('Erro ao iniciar varredura: ' + err.message, 'danger');
     }
@@ -679,9 +855,73 @@
     try {
       await fetch('/api/scan/cancel', { method: 'POST' });
       showToast('Varredura cancelada pelo usuário.', 'info');
+      elements.btnStartScan.classList.remove('hidden');
+      if (elements.btnQuickScan) elements.btnQuickScan.classList.remove('hidden');
+      elements.btnCancelScan.classList.add('hidden');
     } catch (err) {
       console.error(err);
     }
+  }
+
+  // Check and display AutoSave Banner on startup
+  async function checkAutoSaveStatus() {
+    try {
+      const res = await fetch('/api/cache/autosave/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.exists && data.autoSave && elements.autoSaveBanner) {
+        const info = data.autoSave;
+        const d = new Date(info.modTime);
+        const timeAgo = formatTimeAgo(d);
+        elements.autoSaveDetailsText.textContent = `Arquivo: ${info.fileName} (${formatBytes(info.sizeBytes)}) • Salvo ${timeAgo}`;
+        elements.autoSaveBanner.classList.remove('hidden');
+      }
+    } catch (err) {
+      console.warn('Erro ao verificar status de autosave:', err);
+    }
+  }
+
+  // Restore latest AutoSave snapshot
+  async function restoreAutoSave() {
+    try {
+      showToast('Carregando autosave do disco...', 'info');
+      const res = await fetch('/api/cache/autosave/restore', { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      const result = await res.json();
+      const snap = result.snapshot;
+
+      if (elements.autoSaveBanner) elements.autoSaveBanner.classList.add('hidden');
+      showToast(`Autosave restaurado com sucesso! ${formatNumber(snap.totalFiles)} arquivos carregados.`, 'success');
+
+      // Auto check roots that were in snapshot
+      if (snap.roots && snap.roots.length > 0) {
+        state.selectedRoots.clear();
+        snap.roots.forEach(r => state.selectedRoots.add(r));
+        elements.drivesGrid.querySelectorAll('.drive-card').forEach(card => {
+          const mount = card.getAttribute('data-mount');
+          if (state.selectedRoots.has(mount)) {
+            card.classList.add('selected');
+          }
+        });
+      }
+
+      loadTreeData('');
+      loadDuplicates();
+      loadFolderDuplicates();
+      loadAnalytics();
+      return snap;
+    } catch (err) {
+      showToast('Erro ao restaurar autosave: ' + err.message, 'danger');
+      throw err;
+    }
+  }
+
+  function formatTimeAgo(date) {
+    const diff = Math.floor((new Date() - date) / 1000);
+    if (diff < 60) return 'há poucos segundos';
+    if (diff < 3600) return `há ${Math.floor(diff / 60)} min`;
+    if (diff < 86400) return `há ${Math.floor(diff / 3600)} horas`;
+    return `em ${date.toLocaleDateString()}`;
   }
 
   // Setup Server-Sent Events (SSE)
@@ -695,6 +935,16 @@
     state.sseSource.addEventListener('scan_progress', (e) => {
       const data = JSON.parse(e.data);
       updateScanProgress(data);
+    });
+
+    state.sseSource.addEventListener('autosave_done', (e) => {
+      const data = JSON.parse(e.data);
+      if (elements.hudAutoSaveBadge) {
+        const d = new Date(data.time * 1000);
+        elements.hudAutoSaveBadge.textContent = `💾 Auto-Salvo (${d.toLocaleTimeString()})`;
+        elements.hudAutoSaveBadge.classList.remove('hidden');
+      }
+      showToast('💾 Cache salvo automaticamente em segundo plano!', 'success');
     });
 
     state.sseSource.addEventListener('fs_event', (e) => {
@@ -733,6 +983,25 @@
     }
     elements.currentPathText.textContent = st.currentPath || 'Processando...';
 
+    // QuickScan & AutoSave Badges
+    if (st.isQuickScan) {
+      if (elements.hudQuickScanBadge) elements.hudQuickScanBadge.classList.remove('hidden');
+      if (elements.boxReusedFiles) elements.boxReusedFiles.style.display = 'flex';
+      if (elements.boxNewModifiedFiles) elements.boxNewModifiedFiles.style.display = 'flex';
+      if (elements.statReusedFiles) elements.statReusedFiles.textContent = formatNumber(st.reusedFilesCount || 0);
+      if (elements.statNewModifiedFiles) elements.statNewModifiedFiles.textContent = formatNumber((st.modifiedFilesCount || 0) + (st.newFilesCount || 0));
+    } else {
+      if (elements.hudQuickScanBadge) elements.hudQuickScanBadge.classList.add('hidden');
+      if (elements.boxReusedFiles) elements.boxReusedFiles.style.display = 'none';
+      if (elements.boxNewModifiedFiles) elements.boxNewModifiedFiles.style.display = 'none';
+    }
+
+    if (st.lastAutoSaveTime > 0 && elements.hudAutoSaveBadge) {
+      const d = new Date(st.lastAutoSaveTime * 1000);
+      elements.hudAutoSaveBadge.textContent = `💾 Auto-Salvo (${d.toLocaleTimeString()})`;
+      elements.hudAutoSaveBadge.classList.remove('hidden');
+    }
+
     // Update Errors Badge
     if (st.errorsCount > 0) {
       elements.hudErrorsBadge.textContent = `⚠️ ${st.errorsCount} Itens Bloqueados / Ignorados`;
@@ -742,7 +1011,7 @@
     }
 
     if (st.phase === 'phase1_metadata') {
-      elements.hudPhaseBadge.textContent = 'Fase 1: Mapeamento de Metadados em Memória';
+      elements.hudPhaseBadge.textContent = st.isQuickScan ? 'Fase 1: Mapeamento e Verificação Incremental' : 'Fase 1: Mapeamento de Metadados em Memória';
       elements.hudPhaseBadge.style.background = 'rgba(56, 189, 248, 0.15)';
       elements.hudPhaseBadge.style.color = '#38bdf8';
       elements.statSpeed.textContent = `${Math.round(st.scanRateFilesPerSec || 0)} arq/s`;
@@ -751,7 +1020,7 @@
       elements.liveBadge.className = 'status-badge scanning';
       elements.liveStatusText.textContent = 'Fase 1: Mapeando...';
     } else if (st.phase === 'phase2_hashing') {
-      elements.hudPhaseBadge.textContent = 'Fase 2: Cálculo Concorrente de Hashes';
+      elements.hudPhaseBadge.textContent = st.isQuickScan ? 'Fase 2: Hashes apenas de Novos / Modificados' : 'Fase 2: Cálculo Concorrente de Hashes';
       elements.hudPhaseBadge.style.background = 'rgba(168, 85, 247, 0.15)';
       elements.hudPhaseBadge.style.color = '#a855f7';
       elements.statSpeed.textContent = `${(st.hashRateMBPerSec || 0).toFixed(1)} MB/s`;
@@ -767,6 +1036,7 @@
       elements.progressBarFill.style.width = '100%';
       elements.progressPercentText.textContent = '100%';
       elements.btnStartScan.classList.remove('hidden');
+      if (elements.btnQuickScan) elements.btnQuickScan.classList.remove('hidden');
       elements.btnCancelScan.classList.add('hidden');
       elements.liveBadge.className = 'status-badge live';
       elements.liveStatusText.textContent = 'Live Monitoring';
@@ -1801,109 +2071,198 @@
   }
 
   // Load Duplicate Groups
-  async function loadDuplicates() {
-    const sortBy = elements.dupSortBy.value;
-    const minSize = elements.dupMinSize.value;
-    const search = elements.dupSearch.value.trim();
+  async function loadDuplicates(reset = true) {
+    if (state.isLoadingDups) return;
+
+    if (reset) {
+      state.dupOffset = 0;
+      state.dupGroups = [];
+    }
+
+    const sortBy = elements.dupSortBy ? elements.dupSortBy.value : 'size_desc';
+    const minSize = elements.dupMinSize ? elements.dupMinSize.value : 0;
+    const search = elements.dupSearch ? elements.dupSearch.value.trim() : '';
+    const limit = state.dupLimit || 50;
 
     try {
-      const url = `/api/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}`;
+      state.isLoadingDups = true;
+      if (reset && elements.duplicatesContainer) {
+        elements.duplicatesContainer.innerHTML = '<div class="loading-state">Carregando duplicados por hash...</div>';
+      }
+
+      const url = `/api/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}&limit=${limit}&offset=${state.dupOffset}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Falha ao carregar duplicados');
       const data = await res.json();
       state.duplicatesData = data;
-      renderDuplicates(data);
+      state.dupTotalGroups = data.totalGroups || 0;
+
+      if (data.groups && data.groups.length > 0) {
+        state.dupGroups.push(...data.groups);
+      }
+
+      renderDuplicates(data, !reset);
     } catch (err) {
-      elements.duplicatesContainer.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
+      if (reset && elements.duplicatesContainer) {
+        elements.duplicatesContainer.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
+      }
+    } finally {
+      state.isLoadingDups = false;
     }
   }
 
   // Render Duplicates Cards
-  function renderDuplicates(data) {
-    if (!data || !data.groups || data.groups.length === 0) {
-      elements.duplicatesContainer.innerHTML = '<div class="empty-state">Nenhum arquivo duplicado encontrado com os filtros atuais.</div>';
-      return;
+  function renderDuplicates(data, isAppend = false) {
+    if (!elements.duplicatesContainer) return;
+
+    if (!isAppend) {
+      if (!state.dupGroups || state.dupGroups.length === 0) {
+        elements.duplicatesContainer.innerHTML = '<div class="empty-state">Nenhum arquivo duplicado encontrado com os filtros atuais.</div>';
+        if (elements.dupTotalGroups) elements.dupTotalGroups.textContent = '0';
+        if (elements.dupTotalFiles) elements.dupTotalFiles.textContent = '0';
+        if (elements.dupTotalWasted) elements.dupTotalWasted.textContent = '0 B';
+        return;
+      }
+
+      if (elements.dupTotalGroups) elements.dupTotalGroups.textContent = formatNumber(data.totalGroups || state.dupGroups.length);
+      if (elements.dupTotalFiles) elements.dupTotalFiles.textContent = formatNumber(data.totalFiles || 0);
+      if (elements.dupTotalWasted) elements.dupTotalWasted.textContent = formatBytes(data.wastedBytes || 0);
+      elements.duplicatesContainer.innerHTML = '';
     }
 
-    elements.dupTotalGroups.textContent = formatNumber(data.totalGroups);
-    elements.dupTotalFiles.textContent = formatNumber(data.totalFiles);
-    elements.dupTotalWasted.textContent = formatBytes(data.wastedBytes);
+    const groupsToRender = isAppend ? (data.groups || []) : state.dupGroups;
+    const existingPagination = elements.duplicatesContainer.querySelector('.dup-pagination-bar');
+    if (existingPagination) existingPagination.remove();
 
-    elements.duplicatesContainer.innerHTML = data.groups.map(grp => {
-      const hashShort = grp.hash.length > 22 ? grp.hash.substring(0, 22) + '...' : grp.hash;
+    const fragment = document.createDocumentFragment();
 
-      return `
-        <div class="dup-group-card" data-group-id="${grp.id}">
-          <div class="dup-group-header">
-            <div class="dup-group-left">
-              <span class="dup-hash-pill" title="${grp.hash}">${hashShort}</span>
-              <span class="dup-size-pill">${formatBytes(grp.fileSize)} cada</span>
-              <span class="dup-wasted-badge">Desperdiçado: ${formatBytes(grp.wastedBytes)} (${grp.fileCount} cópias)</span>
-            </div>
-            <div class="dup-group-actions">
-              <button class="btn btn-secondary btn-sm btn-group-keep-newest" data-group-id="${grp.id}">⭐ Manter +Recente</button>
-            </div>
+    groupsToRender.forEach(grp => {
+      const hashShort = (grp.hash && grp.hash.length > 22) ? grp.hash.substring(0, 22) + '...' : (grp.hash || 'hash');
+
+      const card = document.createElement('div');
+      card.className = 'dup-group-card';
+      card.setAttribute('data-group-id', grp.id);
+
+      card.innerHTML = `
+        <div class="dup-group-header">
+          <div class="dup-group-left">
+            <span class="dup-hash-pill" title="${grp.hash}">${hashShort}</span>
+            <span class="dup-size-pill">${formatBytes(grp.fileSize)} cada</span>
+            <span class="dup-wasted-badge">Desperdiçado: ${formatBytes(grp.wastedBytes)} (${grp.fileCount} cópias)</span>
           </div>
-
-          <div class="dup-file-list">
-            ${grp.files.map((file, idx) => {
-              const isMarked = state.selectedFilesForDelete.has(file.path);
-
-              return `
-                <div class="dup-file-row ${isMarked ? 'marked-for-delete' : ''}">
-                  <div class="dup-file-left">
-                    <input type="checkbox" class="dup-file-checkbox" 
-                           data-path="${file.path}" 
-                           data-size="${file.size}" 
-                           ${isMarked ? 'checked' : ''}>
-                    <span class="dup-file-path truncate" title="${file.path}">${file.path}</span>
-                  </div>
-                  <div class="dup-file-date">
-                    ${formatDate(file.modTime)}
-                  </div>
-                </div>
-              `;
-            }).join('')}
+          <div class="dup-group-actions">
+            <button class="btn btn-secondary btn-sm btn-group-keep-newest" data-group-id="${grp.id}">⭐ Manter +Recente</button>
           </div>
         </div>
+
+        <div class="dup-file-list">
+          ${(grp.files || []).map((file, idx) => {
+            const isMarked = state.selectedFilesForDelete.has(file.path);
+
+            return `
+              <div class="dup-file-row ${isMarked ? 'marked-for-delete' : ''}">
+                <div class="dup-file-left">
+                  <input type="checkbox" class="dup-file-checkbox" 
+                         data-path="${file.path}" 
+                         data-size="${file.size}" 
+                         ${isMarked ? 'checked' : ''}>
+                  <span class="dup-file-path truncate" title="${file.path}">${file.path}</span>
+                </div>
+                <div class="dup-file-date">
+                  ${formatDate(file.modTime)}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
       `;
-    }).join('');
 
-    // Attach checkbox handlers
-    elements.duplicatesContainer.querySelectorAll('.dup-file-checkbox').forEach(cb => {
-      cb.addEventListener('change', (e) => {
-        const path = cb.getAttribute('data-path');
-        const size = parseInt(cb.getAttribute('data-size'), 10);
-        if (cb.checked) {
-          state.selectedFilesForDelete.set(path, size);
-        } else {
-          state.selectedFilesForDelete.delete(path);
-        }
-        updateSelectionSummary();
-        cb.closest('.dup-file-row').classList.toggle('marked-for-delete', cb.checked);
-      });
-    });
-
-    // Group button handler
-    elements.duplicatesContainer.querySelectorAll('.btn-group-keep-newest').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const gId = btn.getAttribute('data-group-id');
-        const grp = data.groups.find(g => g.id === gId);
-        if (!grp || grp.files.length < 2) return;
-
-        // Files are sorted by ModTime ascending (last file is newest)
-        const newest = grp.files[grp.files.length - 1];
-        grp.files.forEach(f => {
-          if (f.path !== newest.path) {
-            state.selectedFilesForDelete.set(f.path, f.size);
+      // Attach event listeners for this card
+      card.querySelectorAll('.dup-file-checkbox').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+          const path = cb.getAttribute('data-path');
+          const size = parseInt(cb.getAttribute('data-size'), 10);
+          if (cb.checked) {
+            state.selectedFilesForDelete.set(path, size);
           } else {
-            state.selectedFilesForDelete.delete(f.path);
+            state.selectedFilesForDelete.delete(path);
           }
+          updateSelectionSummary();
+          cb.closest('.dup-file-row').classList.toggle('marked-for-delete', cb.checked);
         });
-        renderDuplicates(state.duplicatesData);
-        updateSelectionSummary();
       });
+
+      card.querySelectorAll('.btn-group-keep-newest').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const gId = btn.getAttribute('data-group-id');
+          const g = state.dupGroups.find(x => x.id === gId) || grp;
+          if (!g || !g.files || g.files.length < 2) return;
+
+          const newest = g.files[g.files.length - 1];
+          g.files.forEach(f => {
+            if (f.path !== newest.path) {
+              state.selectedFilesForDelete.set(f.path, f.size);
+            } else {
+              state.selectedFilesForDelete.delete(f.path);
+            }
+          });
+          // Update visual checkboxes in this card
+          card.querySelectorAll('.dup-file-row').forEach(row => {
+            const cb = row.querySelector('.dup-file-checkbox');
+            if (cb) {
+              const p = cb.getAttribute('data-path');
+              const isMarked = state.selectedFilesForDelete.has(p);
+              cb.checked = isMarked;
+              row.classList.toggle('marked-for-delete', isMarked);
+            }
+          });
+          updateSelectionSummary();
+        });
+      });
+
+      fragment.appendChild(card);
     });
+
+    elements.duplicatesContainer.appendChild(fragment);
+
+    // Add Pagination Footer if there are more groups
+    const totalGroups = state.dupTotalGroups || 0;
+    if (state.dupGroups.length < totalGroups) {
+      const pagDiv = document.createElement('div');
+      pagDiv.className = 'dup-pagination-bar';
+      pagDiv.style.cssText = 'display: flex; gap: 0.75rem; justify-content: center; align-items: center; padding: 1.5rem 0; flex-wrap: wrap;';
+      pagDiv.innerHTML = `
+        <span style="font-size: 0.85rem; color: var(--text-secondary);">
+          Exibindo ${state.dupGroups.length} de ${formatNumber(totalGroups)} grupos de arquivos duplicados
+        </span>
+        <button id="btnLoadMoreDups" class="btn btn-primary btn-sm">
+          ⬇️ Carregar Mais 50
+        </button>
+        <button id="btnLoadMore200Dups" class="btn btn-secondary btn-sm">
+          ⚡ Carregar Mais 200
+        </button>
+      `;
+
+      const btn50 = pagDiv.querySelector('#btnLoadMoreDups');
+      if (btn50) {
+        btn50.addEventListener('click', () => {
+          state.dupOffset += (state.dupLimit || 50);
+          state.dupLimit = 50;
+          loadDuplicates(false);
+        });
+      }
+
+      const btn200 = pagDiv.querySelector('#btnLoadMore200Dups');
+      if (btn200) {
+        btn200.addEventListener('click', () => {
+          state.dupOffset += (state.dupLimit || 50);
+          state.dupLimit = 200;
+          loadDuplicates(false);
+        });
+      }
+
+      elements.duplicatesContainer.appendChild(pagDiv);
+    }
 
     updateSelectionSummary();
   }
@@ -2196,10 +2555,11 @@
       });
     });
 
-    if (elements.dupFolderSortBy) elements.dupFolderSortBy.addEventListener('change', loadFolderDuplicates);
-    if (elements.dupFolderMinSize) elements.dupFolderMinSize.addEventListener('change', loadFolderDuplicates);
-    if (elements.dupFolderSearch) elements.dupFolderSearch.addEventListener('input', debounce(loadFolderDuplicates, 300));
-    if (elements.btnRefreshFolderDuplicates) elements.btnRefreshFolderDuplicates.addEventListener('click', loadFolderDuplicates);
+    if (elements.dupFolderSortBy) elements.dupFolderSortBy.addEventListener('change', () => loadFolderDuplicates(true));
+    if (elements.dupFolderMinSize) elements.dupFolderMinSize.addEventListener('change', () => loadFolderDuplicates(true));
+    if (elements.dupFolderSearch) elements.dupFolderSearch.addEventListener('input', debounce(() => loadFolderDuplicates(true), 300));
+    if (elements.chkFolderTopLevelOnly) elements.chkFolderTopLevelOnly.addEventListener('change', () => loadFolderDuplicates(true));
+    if (elements.btnRefreshFolderDuplicates) elements.btnRefreshFolderDuplicates.addEventListener('click', () => loadFolderDuplicates(true));
 
     // Swap paths
     if (elements.btnSwapComparePaths) {
@@ -2217,93 +2577,187 @@
   }
 
   // Load Folder Duplicates
-  async function loadFolderDuplicates() {
-    if (!elements.folderDuplicatesContainer) return;
+  async function loadFolderDuplicates(reset = true) {
+    if (!elements.folderDuplicatesContainer || state.isLoadingFolderDups) return;
 
-    const sortBy = elements.dupFolderSortBy.value;
-    const minSize = elements.dupFolderMinSize.value;
-    const search = elements.dupFolderSearch.value.trim();
+    if (reset) {
+      state.folderDupOffset = 0;
+      state.folderDupGroups = [];
+    }
+
+    const sortBy = elements.dupFolderSortBy ? elements.dupFolderSortBy.value : 'subdirs_desc';
+    const minSize = elements.dupFolderMinSize ? elements.dupFolderMinSize.value : 0;
+    const search = elements.dupFolderSearch ? elements.dupFolderSearch.value.trim() : '';
+    const topLevelOnly = elements.chkFolderTopLevelOnly ? elements.chkFolderTopLevelOnly.checked : true;
+    const limit = state.folderDupLimit || 50;
 
     try {
-      const url = `/api/folders/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}`;
+      state.isLoadingFolderDups = true;
+      if (reset) {
+        elements.folderDuplicatesContainer.innerHTML = '<div class="loading-state">Identificando e classificando pastas clones por hierarquia...</div>';
+      }
+
+      const url = `/api/folders/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}&topLevelOnly=${topLevelOnly}&limit=${limit}&offset=${state.folderDupOffset}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Falha ao obter pastas duplicadas');
       const data = await res.json();
       state.folderDuplicatesData = data;
-      renderFolderDuplicates(data);
+      state.folderDupTotalGroups = data.totalGroups || 0;
+
+      if (data.groups && data.groups.length > 0) {
+        state.folderDupGroups.push(...data.groups);
+      }
+
+      renderFolderDuplicates(data, !reset);
     } catch (err) {
-      elements.folderDuplicatesContainer.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
+      if (reset) {
+        elements.folderDuplicatesContainer.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
+      }
+    } finally {
+      state.isLoadingFolderDups = false;
     }
   }
 
   // Render Duplicate Folders
-  function renderFolderDuplicates(data) {
-    if (!data || !data.groups || data.groups.length === 0) {
-      elements.folderDuplicatesContainer.innerHTML = '<div class="empty-state">Nenhuma pasta duplicada encontrada com os filtros atuais. Realize uma varredura para identificar pastas com conteúdo idêntico.</div>';
-      return;
+  function renderFolderDuplicates(data, isAppend = false) {
+    if (!elements.folderDuplicatesContainer) return;
+
+    if (!isAppend) {
+      if (!state.folderDupGroups || state.folderDupGroups.length === 0) {
+        elements.folderDuplicatesContainer.innerHTML = '<div class="empty-state">Nenhuma pasta duplicada encontrada com os filtros atuais. Realize uma varredura para identificar pastas com conteúdo idêntico.</div>';
+        if (elements.dupFolderTotalGroups) elements.dupFolderTotalGroups.textContent = '0';
+        if (elements.dupFolderTotalCount) elements.dupFolderTotalCount.textContent = '0';
+        if (elements.dupFolderTotalWasted) elements.dupFolderTotalWasted.textContent = '0 B';
+        return;
+      }
+
+      const isFilteredTop = elements.chkFolderTopLevelOnly && elements.chkFolderTopLevelOnly.checked;
+      const totalTxt = isFilteredTop && data.topLevelGroups 
+        ? `${formatNumber(data.totalGroups)} (${formatNumber(data.topLevelGroups)} Pastas Raiz)`
+        : formatNumber(data.totalGroups || state.folderDupGroups.length);
+
+      if (elements.dupFolderTotalGroups) elements.dupFolderTotalGroups.textContent = totalTxt;
+      if (elements.dupFolderTotalCount) elements.dupFolderTotalCount.textContent = formatNumber(data.totalFolders || 0);
+      if (elements.dupFolderTotalWasted) elements.dupFolderTotalWasted.textContent = formatBytes(data.wastedBytes || 0);
+      elements.folderDuplicatesContainer.innerHTML = '';
     }
 
-    elements.dupFolderTotalGroups.textContent = formatNumber(data.totalGroups);
-    elements.dupFolderTotalCount.textContent = formatNumber(data.totalFolders);
-    elements.dupFolderTotalWasted.textContent = formatBytes(data.wastedBytes);
+    const groupsToRender = isAppend ? (data.groups || []) : state.folderDupGroups;
+    const existingPagination = elements.folderDuplicatesContainer.querySelector('.dup-pagination-bar');
+    if (existingPagination) existingPagination.remove();
 
-    elements.folderDuplicatesContainer.innerHTML = data.groups.map(grp => {
-      const hashShort = grp.folderHash.length > 24 ? grp.folderHash.substring(0, 24) + '...' : grp.folderHash;
+    const fragment = document.createDocumentFragment();
 
-      return `
-        <div class="dup-group-card folder-dup-group-card" data-group-id="${grp.id}">
-          <div class="dup-group-header">
-            <div class="dup-group-left">
-              <span class="dup-hash-pill" title="${grp.folderHash}">📁 ${hashShort}</span>
-              <span class="dup-size-pill">${formatBytes(grp.folderSize)} por pasta</span>
-              <span class="dup-size-pill">📄 ${formatNumber(grp.fileCount)} arquivos cada</span>
-              <span class="dup-wasted-badge">Desperdício: ${formatBytes(grp.wastedBytes)} (${grp.folderCount} cópias da pasta)</span>
-            </div>
-            <div class="dup-group-actions">
-              ${grp.folders.length >= 2 ? `
-                <button class="btn btn-secondary btn-sm btn-quick-compare-folders" 
-                        data-path-a="${grp.folders[0].path}" 
-                        data-path-b="${grp.folders[1].path}">
-                  ⚖️ Comparar Pasta 1 e 2
-                </button>
-              ` : ''}
-            </div>
+    groupsToRender.forEach(grp => {
+      const hashShort = (grp.folderHash && grp.folderHash.length > 24) ? grp.folderHash.substring(0, 24) + '...' : (grp.folderHash || 'hash');
+      const isRoot = grp.isTopLevel !== false;
+      const levelBadge = isRoot 
+        ? `<span class="dup-root-badge">🌟 PASTA RAIZ CLONE</span>` 
+        : `<span class="dup-subfolder-badge">📁 Subpasta Contida</span>`;
+      const subdirsBadge = grp.subDirCount > 0 
+        ? `<span class="dup-subdirs-pill" title="${formatNumber(grp.subDirCount)} subpastas nesta árvore">🌳 ${formatNumber(grp.subDirCount)} subpastas</span>` 
+        : '';
+
+      const card = document.createElement('div');
+      card.className = `dup-group-card folder-dup-group-card ${isRoot ? 'is-root-clone' : ''}`;
+      card.setAttribute('data-group-id', grp.id);
+
+      card.innerHTML = `
+        <div class="dup-group-header">
+          <div class="dup-group-left">
+            ${levelBadge}
+            <span class="dup-hash-pill" title="${grp.folderHash}">📁 ${hashShort}</span>
+            <span class="dup-size-pill">${formatBytes(grp.folderSize)} cada</span>
+            <span class="dup-size-pill">📄 ${formatNumber(grp.fileCount)} arquivos</span>
+            ${subdirsBadge}
+            <span class="dup-wasted-badge">Desperdício: ${formatBytes(grp.wastedBytes)} (${grp.folderCount} cópias)</span>
           </div>
-
-          <div class="dup-file-list">
-            ${grp.folders.map((folder, idx) => {
-              return `
-                <div class="dup-file-row">
-                  <div class="dup-file-left">
-                    <span class="folder-badge-num">#${idx + 1}</span>
-                    <span class="dup-file-path truncate" title="${folder.path}">${folder.path}</span>
-                  </div>
-                  <div class="dup-file-date">
-                    <span>${formatNumber(folder.fileCount)} arq</span> &bull; 
-                    <strong>${formatBytes(folder.totalSize)}</strong>
-                  </div>
-                </div>
-              `;
-            }).join('')}
+          <div class="dup-group-actions">
+            ${grp.folders && grp.folders.length >= 2 ? `
+              <button class="btn btn-secondary btn-sm btn-quick-compare-folders" 
+                      data-path-a="${grp.folders[0].path}" 
+                      data-path-b="${grp.folders[1].path}">
+                ⚖️ Comparar Pasta 1 e 2
+              </button>
+            ` : ''}
           </div>
         </div>
+
+        <div class="dup-file-list">
+          ${(grp.folders || []).map((folder, idx) => {
+            const folderSubdirs = folder.subDirCount > 0 ? ` &bull; 🌳 ${formatNumber(folder.subDirCount)} subpastas` : '';
+            return `
+              <div class="dup-file-row">
+                <div class="dup-file-left">
+                  <span class="folder-badge-num">#${idx + 1}</span>
+                  <span class="dup-file-path truncate" title="${folder.path}">${folder.path}</span>
+                </div>
+                <div class="dup-file-date">
+                  <span>${formatNumber(folder.fileCount)} arq${folderSubdirs}</span> &bull; 
+                  <strong>${formatBytes(folder.totalSize)}</strong>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
       `;
-    }).join('');
 
-    // Attach quick compare button handlers
-    elements.folderDuplicatesContainer.querySelectorAll('.btn-quick-compare-folders').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pA = btn.getAttribute('data-path-a');
-        const pB = btn.getAttribute('data-path-b');
-        elements.comparePathA.value = pA;
-        elements.comparePathB.value = pB;
+      card.querySelectorAll('.btn-quick-compare-folders').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const pA = btn.getAttribute('data-path-a');
+          const pB = btn.getAttribute('data-path-b');
+          if (elements.comparePathA) elements.comparePathA.value = pA;
+          if (elements.comparePathB) elements.comparePathB.value = pB;
 
-        // Switch to compare subtab
-        const compTabBtn = document.querySelector('.folder-subtab[data-subtab="folderCompareSubtab"]');
-        if (compTabBtn) compTabBtn.click();
-        runFolderCompare();
+          const compTabBtn = document.querySelector('.folder-subtab[data-subtab="folderCompareSubtab"]');
+          if (compTabBtn) compTabBtn.click();
+          runFolderCompare();
+        });
       });
+
+      fragment.appendChild(card);
     });
+
+    elements.folderDuplicatesContainer.appendChild(fragment);
+
+    // Add Pagination Footer if there are more folder groups
+    const totalGroups = state.folderDupTotalGroups || 0;
+    if (state.folderDupGroups.length < totalGroups) {
+      const pagDiv = document.createElement('div');
+      pagDiv.className = 'dup-pagination-bar';
+      pagDiv.style.cssText = 'display: flex; gap: 0.75rem; justify-content: center; align-items: center; padding: 1.5rem 0; flex-wrap: wrap;';
+      pagDiv.innerHTML = `
+        <span style="font-size: 0.85rem; color: var(--text-secondary);">
+          Exibindo ${state.folderDupGroups.length} de ${formatNumber(totalGroups)} grupos de pastas clones
+        </span>
+        <button id="btnLoadMoreFolderDups" class="btn btn-primary btn-sm">
+          ⬇️ Carregar Mais 50 Pastas
+        </button>
+        <button id="btnLoadMore200FolderDups" class="btn btn-secondary btn-sm">
+          ⚡ Carregar Mais 200
+        </button>
+      `;
+
+      const btn50 = pagDiv.querySelector('#btnLoadMoreFolderDups');
+      if (btn50) {
+        btn50.addEventListener('click', () => {
+          state.folderDupOffset += (state.folderDupLimit || 50);
+          state.folderDupLimit = 50;
+          loadFolderDuplicates(false);
+        });
+      }
+
+      const btn200 = pagDiv.querySelector('#btnLoadMore200FolderDups');
+      if (btn200) {
+        btn200.addEventListener('click', () => {
+          state.folderDupOffset += (state.folderDupLimit || 50);
+          state.folderDupLimit = 200;
+          loadFolderDuplicates(false);
+        });
+      }
+
+      elements.folderDuplicatesContainer.appendChild(pagDiv);
+    }
   }
 
   // Run Folder Direct Side-by-Side Comparison
@@ -2674,7 +3128,582 @@
     }
   }
 
+  // =========================================================================
+  // AI ASSISTANT & MCP AGENT IMPLEMENTATION
+  // =========================================================================
+
+  function setupAIAssistant() {
+    // Provider Switcher Buttons
+    document.querySelectorAll('.btn-ai-provider').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const provider = btn.getAttribute('data-provider');
+        document.querySelectorAll('.btn-ai-provider').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.ai.provider = provider;
+        updateAIModelDropdown();
+      });
+    });
+
+    // Model Selector Change
+    if (elements.aiModelSelect) {
+      elements.aiModelSelect.addEventListener('change', () => {
+        state.ai.selectedModel = elements.aiModelSelect.value;
+        checkIfModelNeedsPull();
+      });
+    }
+
+    // Pull Model Button
+    if (elements.btnPullSelectedModel) {
+      elements.btnPullSelectedModel.addEventListener('click', () => {
+        if (state.ai.selectedModel) {
+          pullOllamaModel(state.ai.selectedModel);
+        }
+      });
+    }
+
+    // Settings Modal
+    if (elements.btnOpenAIConfigModal && elements.aiConfigModal) {
+      elements.btnOpenAIConfigModal.addEventListener('click', async () => {
+        elements.aiConfigModal.classList.remove('hidden');
+        try {
+          const res = await fetch('/api/config');
+          if (res.ok) {
+            const cfg = await res.json();
+            if (elements.aiOllamaEndpointInput) elements.aiOllamaEndpointInput.value = cfg.aiOllamaEndpoint || 'http://127.0.0.1:11434';
+            if (elements.aiOpenRouterKeyInput) elements.aiOpenRouterKeyInput.value = cfg.aiOpenRouterKey || '';
+            if (elements.aiDryRunDefaultCheckbox) elements.aiDryRunDefaultCheckbox.checked = cfg.aiDryRunDefault !== false;
+          }
+        } catch (e) {
+          console.error('Falha ao carregar config de IA', e);
+        }
+      });
+    }
+
+    // Save AI Settings
+    if (elements.btnSaveAIConfig) {
+      elements.btnSaveAIConfig.addEventListener('click', async () => {
+        try {
+          const resConfig = await fetch('/api/config');
+          const currentConfig = resConfig.ok ? await resConfig.json() : {};
+
+          currentConfig.aiOllamaEndpoint = elements.aiOllamaEndpointInput.value.trim() || 'http://127.0.0.1:11434';
+          currentConfig.aiOpenRouterKey = elements.aiOpenRouterKeyInput.value.trim();
+          currentConfig.aiDryRunDefault = elements.aiDryRunDefaultCheckbox.checked;
+
+          const saveRes = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentConfig),
+          });
+
+          if (saveRes.ok) {
+            showToast('Configurações de IA salvas com sucesso!', 'success');
+            elements.aiConfigModal.classList.add('hidden');
+            loadAICatalog();
+          } else {
+            showToast('Falha ao salvar configurações de IA.', 'danger');
+          }
+        } catch (err) {
+          showToast('Erro: ' + err.message, 'danger');
+        }
+      });
+    }
+
+    // Clear Chat
+    if (elements.btnClearAIChat) {
+      elements.btnClearAIChat.addEventListener('click', () => {
+        state.ai.chatHistory = [];
+        if (elements.aiMessagesContainer) {
+          elements.aiMessagesContainer.innerHTML = `
+            <div class="ai-welcome-message">
+              <div class="ai-avatar">🤖</div>
+              <div class="ai-bubble">
+                <h4>Conversa reiniciada.</h4>
+                <p>Peça para eu analisar arquivos, checar duplicatas ou propor ações seguras.</p>
+                <div class="ai-quick-prompts">
+                  <button class="ai-prompt-chip" data-prompt="Ache todas as duplicatas maiores que 50MB e gere uma proposta de limpeza">
+                    🔍 Achar duplicatas &gt; 50MB
+                  </button>
+                  <button class="ai-prompt-chip" data-prompt="Classifique os maiores arquivos deste disco por tipo e resuma o espaço">
+                    📊 Classificar maiores arquivos
+                  </button>
+                  <button class="ai-prompt-chip" data-prompt="Quais são os arquivos ociosos há mais de 1 ano que estão ocupando mais espaço?">
+                    ⏳ Arquivos ociosos &gt; 1 ano
+                  </button>
+                </div>
+              </div>
+            </div>
+          `;
+          attachQuickPromptListeners();
+        }
+      });
+    }
+
+    // Send Message Button & Textarea
+    if (elements.btnSendAIMessage) {
+      elements.btnSendAIMessage.addEventListener('click', () => sendAIMessage());
+    }
+
+    if (elements.aiPromptInput) {
+      elements.aiPromptInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendAIMessage();
+        }
+      });
+    }
+
+    attachQuickPromptListeners();
+  }
+
+  function attachQuickPromptListeners() {
+    document.querySelectorAll('.ai-prompt-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const prompt = chip.getAttribute('data-prompt');
+        if (elements.aiPromptInput) {
+          elements.aiPromptInput.value = prompt;
+          sendAIMessage();
+        }
+      });
+    });
+  }
+
+  // Load AI Catalog from Server
+  async function loadAICatalog() {
+    try {
+      const res = await fetch('/api/ai/models');
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      state.ai.modelsCatalog = data;
+
+      // Update status dot
+      if (elements.ollamaStatusDot) {
+        elements.ollamaStatusDot.className = `provider-dot ${data.ollamaOnline ? 'online' : ''}`;
+        elements.ollamaStatusDot.title = data.ollamaOnline ? `Ollama Online (${data.ollamaVersion || 'v0.x'})` : 'Ollama Offline';
+      }
+
+      updateAIModelDropdown();
+      renderCatalogSidebar(data);
+    } catch (err) {
+      console.warn('Erro ao carregar catálogo de IA:', err);
+    }
+  }
+
+  function updateAIModelDropdown() {
+    if (!elements.aiModelSelect || !state.ai.modelsCatalog) return;
+
+    const cat = state.ai.modelsCatalog;
+    let list = [];
+
+    if (state.ai.provider === 'ollama') {
+      list = cat.localModels || [];
+    } else if (state.ai.provider === 'openrouter') {
+      list = cat.openRouterModels || [];
+    } else if (state.ai.provider === 'direct') {
+      list = cat.directModels && cat.directModels.length > 0 ? cat.directModels : [
+        { id: 'direct-rules', name: 'Regras e IA Local Direta (In-Process)', ramRequired: '~50 MB RAM', isInstalled: true }
+      ];
+    }
+
+    elements.aiModelSelect.innerHTML = list.map(m => {
+      const installedBadge = m.isInstalled ? ' [Instalado]' : (m.isFree ? ' [Grátis]' : '');
+      const ramInfo = m.ramRequired ? ` (${m.ramRequired})` : '';
+      return `<option value="${m.id}">${m.name}${ramInfo}${installedBadge}</option>`;
+    }).join('');
+
+    // Select first or previously selected
+    if (list.length > 0) {
+      const found = list.some(m => m.id === state.ai.selectedModel);
+      if (!found) {
+        state.ai.selectedModel = list[0].id;
+      }
+      elements.aiModelSelect.value = state.ai.selectedModel;
+    }
+
+    checkIfModelNeedsPull();
+  }
+
+  function checkIfModelNeedsPull() {
+    if (!elements.btnPullSelectedModel || !state.ai.modelsCatalog) return;
+
+    if (state.ai.provider !== 'ollama') {
+      elements.btnPullSelectedModel.classList.add('hidden');
+      return;
+    }
+
+    const currentModelId = elements.aiModelSelect ? elements.aiModelSelect.value : state.ai.selectedModel;
+    const cat = state.ai.modelsCatalog.localModels || [];
+    const item = cat.find(m => m.id === currentModelId);
+
+    if (item && !item.isInstalled && state.ai.modelsCatalog.ollamaOnline) {
+      elements.btnPullSelectedModel.classList.remove('hidden');
+      elements.btnPullSelectedModel.textContent = `⬇️ Baixar ${item.parameters || item.id} (${item.downloadSize})`;
+    } else {
+      elements.btnPullSelectedModel.classList.add('hidden');
+    }
+  }
+
+  function renderCatalogSidebar(catalog) {
+    if (!elements.aiModelsList) return;
+
+    const models = catalog.localModels || [];
+    if (models.length === 0) {
+      elements.aiModelsList.innerHTML = '<div class="empty-state">Nenhum modelo disponível.</div>';
+      return;
+    }
+
+    elements.aiModelsList.innerHTML = models.map(m => {
+      const isSelected = m.id === state.ai.selectedModel;
+      const statusHtml = m.isInstalled 
+        ? '<span class="model-status-tag">✅ Pronto para Uso</span>' 
+        : '<span class="model-status-tag not-installed">☁️ Download Necessário</span>';
+
+      return `
+        <div class="model-catalog-item ${isSelected ? 'active-model' : ''}" data-model-id="${m.id}">
+          <div class="model-item-header">
+            <span class="model-item-name">${m.name}</span>
+            <span class="model-param-badge">${m.parameters || 'SLM'}</span>
+          </div>
+          <div class="model-item-specs">
+            <span>💾 ${m.downloadSize}</span>
+            <span>⚡ ${m.ramRequired}</span>
+          </div>
+          <p class="model-item-desc">${m.recommendedFor || ''}</p>
+          <div class="model-item-footer">
+            ${statusHtml}
+            <button class="btn btn-secondary btn-sm btn-select-catalog-model" data-model-id="${m.id}">
+              ${m.isInstalled ? 'Selecionar' : '⬇️ Baixar'}
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Attach click events on catalog items
+    elements.aiModelsList.querySelectorAll('.btn-select-catalog-model').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const modelId = btn.getAttribute('data-model-id');
+        const item = models.find(m => m.id === modelId);
+        
+        state.ai.provider = 'ollama';
+        document.querySelectorAll('.btn-ai-provider').forEach(b => {
+          b.classList.toggle('active', b.getAttribute('data-provider') === 'ollama');
+        });
+        
+        updateAIModelDropdown();
+        state.ai.selectedModel = modelId;
+        if (elements.aiModelSelect) elements.aiModelSelect.value = modelId;
+
+        if (item && !item.isInstalled) {
+          pullOllamaModel(modelId);
+        } else {
+          showToast(`Modelo '${modelId}' selecionado com sucesso!`, 'info');
+          checkIfModelNeedsPull();
+          renderCatalogSidebar(state.ai.modelsCatalog);
+        }
+      });
+    });
+  }
+
+  // Pull Ollama Model with Progress Stream
+  async function pullOllamaModel(modelName) {
+    if (state.ai.isPulling) return;
+    state.ai.isPulling = true;
+
+    if (elements.aiPullProgressContainer) {
+      elements.aiPullProgressContainer.classList.remove('hidden');
+      elements.pullModelTitle.textContent = `Baixando modelo '${modelName}' via Ollama...`;
+      elements.pullModelPercent.textContent = '0%';
+      elements.pullProgressBar.style.width = '0%';
+      elements.pullModelStatus.textContent = 'Iniciando download...';
+    }
+
+    try {
+      const response = await fetch('/api/ai/models/pull', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName }),
+      });
+
+      if (!response.ok) throw new Error(await response.text());
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.replace('data: ', '').trim();
+            if (!jsonStr) continue;
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.status) {
+                elements.pullModelStatus.textContent = data.status;
+              }
+              if (data.percent !== undefined) {
+                const p = Math.round(data.percent);
+                elements.pullModelPercent.textContent = `${p}%`;
+                elements.pullProgressBar.style.width = `${p}%`;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      showToast(`Modelo '${modelName}' baixado e instalado com sucesso!`, 'success');
+      await loadAICatalog();
+    } catch (err) {
+      showToast('Falha no download do modelo: ' + err.message, 'danger');
+    } finally {
+      state.ai.isPulling = false;
+      setTimeout(() => {
+        if (elements.aiPullProgressContainer) elements.aiPullProgressContainer.classList.add('hidden');
+      }, 3000);
+    }
+  }
+
+  // Send AI Chat Message with SSE Streaming
+  async function sendAIMessage() {
+    if (!elements.aiPromptInput) return;
+    const prompt = elements.aiPromptInput.value.trim();
+    if (!prompt || state.ai.isGenerating) return;
+
+    state.ai.isGenerating = true;
+    elements.aiPromptInput.value = '';
+    elements.btnSendAIMessage.disabled = true;
+
+    // Append User Message to UI
+    appendChatMessage('user', prompt);
+
+    // Create Assistant Bubble Container
+    const msgId = 'msg_' + Date.now();
+    const assistantMsg = document.createElement('div');
+    assistantMsg.className = 'chat-msg assistant';
+    assistantMsg.id = msgId;
+    assistantMsg.innerHTML = `
+      <div class="ai-avatar">🤖</div>
+      <div class="msg-bubble">
+        <div class="tool-status-container" id="${msgId}_tools"></div>
+        <div class="thought-container" id="${msgId}_thought">
+          <span class="tool-spinner"></span> <em>Pensando e consultando ferramentas...</em>
+        </div>
+        <div class="content-container" id="${msgId}_content"></div>
+        <div class="proposal-container" id="${msgId}_proposals"></div>
+      </div>
+    `;
+    elements.aiMessagesContainer.appendChild(assistantMsg);
+    elements.aiMessagesContainer.scrollTop = elements.aiMessagesContainer.scrollHeight;
+
+    const toolsEl = document.getElementById(`${msgId}_tools`);
+    const thoughtEl = document.getElementById(`${msgId}_thought`);
+    const contentEl = document.getElementById(`${msgId}_content`);
+    const proposalsEl = document.getElementById(`${msgId}_proposals`);
+
+    let accumulatedContent = '';
+
+    try {
+      const payload = {
+        provider: state.ai.provider,
+        model: state.ai.selectedModel,
+        prompt: prompt,
+        history: state.ai.chatHistory.slice(-8), // send last turns
+        selectedFolder: state.treePath,
+      };
+
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) throw new Error(await response.text());
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.replace('data: ', '').trim();
+            if (!jsonStr) continue;
+
+            try {
+              const ev = JSON.parse(jsonStr);
+              if (ev.type === 'thought') {
+                if (thoughtEl) thoughtEl.innerHTML = `<span class="tool-spinner"></span> <em>${ev.content}</em>`;
+              } else if (ev.type === 'tool_start') {
+                if (thoughtEl) thoughtEl.innerHTML = '';
+                const tBadge = document.createElement('div');
+                tBadge.className = 'tool-status-badge';
+                tBadge.id = `tool_${ev.ToolName || 'exec'}`;
+                tBadge.innerHTML = `<span class="tool-spinner"></span> Executando ferramenta <strong>${ev.toolName || ''}</strong>...`;
+                toolsEl.appendChild(tBadge);
+              } else if (ev.type === 'tool_end') {
+                const tBadge = document.getElementById(`tool_${ev.ToolName || 'exec'}`);
+                if (tBadge) {
+                  tBadge.innerHTML = `✅ Ferramenta <strong>${ev.toolName || ''}</strong> executada com sucesso.`;
+                }
+              } else if (ev.type === 'token') {
+                if (thoughtEl) thoughtEl.innerHTML = '';
+                accumulatedContent += ev.content;
+                contentEl.innerHTML = formatMarkdownText(accumulatedContent);
+              } else if (ev.type === 'proposal' && ev.proposal) {
+                renderActionProposalCard(ev.proposal, proposalsEl);
+              } else if (ev.type === 'error') {
+                contentEl.innerHTML += `<div class="alert alert-danger" style="margin-top:0.5rem;">❌ ${ev.content}</div>`;
+              }
+            } catch (errParse) {}
+            elements.aiMessagesContainer.scrollTop = elements.aiMessagesContainer.scrollHeight;
+          }
+        }
+      }
+
+      if (thoughtEl && !accumulatedContent) {
+        thoughtEl.innerHTML = '';
+      }
+
+      // Save to chat history
+      state.ai.chatHistory.push({ role: 'user', content: prompt });
+      state.ai.chatHistory.push({ role: 'assistant', content: accumulatedContent });
+
+    } catch (err) {
+      if (contentEl) {
+        contentEl.innerHTML = `<div class="alert alert-danger">Erro de execução da IA: ${err.message}</div>`;
+      }
+    } finally {
+      state.ai.isGenerating = false;
+      elements.btnSendAIMessage.disabled = false;
+    }
+  }
+
+  function appendChatMessage(role, text) {
+    if (!elements.aiMessagesContainer) return;
+    const msg = document.createElement('div');
+    msg.className = `chat-msg ${role}`;
+    msg.innerHTML = `
+      <div class="ai-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+      <div class="msg-bubble">${formatMarkdownText(text)}</div>
+    `;
+    elements.aiMessagesContainer.appendChild(msg);
+    elements.aiMessagesContainer.scrollTop = elements.aiMessagesContainer.scrollHeight;
+  }
+
+  function renderActionProposalCard(proposal, containerEl) {
+    if (!containerEl || !proposal) return;
+
+    const card = document.createElement('div');
+    card.className = 'ai-proposal-card';
+    card.id = `proposal_${proposal.proposalId}`;
+
+    const filesPreview = (proposal.files || []).slice(0, 10).map(f => {
+      return `<div class="proposal-file-item" title="${f}">📄 ${f}</div>`;
+    }).join('');
+
+    card.innerHTML = `
+      <div class="proposal-header">
+        <span class="proposal-type-badge ${proposal.actionType.toLowerCase()}">⚡ PROPOSTA: ${proposal.actionType}</span>
+        <span class="proposal-stats">Afeta ${proposal.fileCount} arquivos (${proposal.totalSize})</span>
+      </div>
+      <p style="font-size:0.85rem; margin-bottom:0.4rem;">${proposal.description || ''}</p>
+      <div class="proposal-files-preview">
+        ${filesPreview}
+        ${proposal.fileCount > 10 ? `<div style="color:var(--accent-cyan); padding-top:4px;">... e mais ${proposal.fileCount - 10} arquivo(s)</div>` : ''}
+      </div>
+      <div class="proposal-actions">
+        <button class="btn btn-secondary btn-sm btn-proposal-dryrun" data-prop-id="${proposal.proposalId}">
+          🔍 Simulação Concluída (Dry-Run Seguro)
+        </button>
+        <button class="btn btn-danger btn-sm btn-proposal-execute" data-prop-id="${proposal.proposalId}" data-action="${proposal.actionType}">
+          ⚡ Executar na Lixeira do Windows
+        </button>
+      </div>
+    `;
+
+    containerEl.appendChild(card);
+
+    // Attach button listeners
+    card.querySelector('.btn-proposal-dryrun').addEventListener('click', () => {
+      showToast(`Simulação ativa: A proposta afetará ${proposal.fileCount} arquivos (${proposal.totalSize}) sem risco de perda antes de aprovação.`, 'info');
+    });
+
+    card.querySelector('.btn-proposal-execute').addEventListener('click', async () => {
+      const confirmed = confirm(
+        `CONFIRMAÇÃO DE AÇÃO:\n\n` +
+        `Deseja executar a ação '${proposal.actionType}' para ${proposal.fileCount} arquivo(s) (${proposal.totalSize})?\n` +
+        `Se for reciclagem, os arquivos irão para a Lixeira nativa do Windows.`
+      );
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch('/api/ai/actions/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            proposalId: proposal.proposalId,
+            actionType: proposal.actionType,
+            files: proposal.files,
+          }),
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+        const result = await res.json();
+
+        showToast(`Sucesso! ${result.message} (${result.freedSize} liberados)`, 'success');
+        card.innerHTML = `
+          <div style="color:#10b981; font-weight:700; font-size:0.9rem;">
+            ✅ Ação executada com sucesso! ${result.message}
+          </div>
+        `;
+        
+        // Refresh duplicates & tree if active
+        if (state.currentTab === 'duplicatesTab') loadDuplicates();
+      } catch (err) {
+        showToast('Erro ao executar proposta: ' + err.message, 'danger');
+      }
+    });
+  }
+
+  // Simple Markdown Parser for Text Formatting
+  function formatMarkdownText(md) {
+    if (!md) return '';
+    let html = md
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Fenced Code blocks
+    html = html.replace(/```([a-zA-Z]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Italic
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // Line breaks
+    html = html.replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+
+    return html;
+  }
+
   // Initialize on DOM load
   document.addEventListener('DOMContentLoaded', init);
 })();
+
 

@@ -24,13 +24,16 @@ type FolderSummary struct {
 
 // DuplicateFolderGroup represents 2 or more directories that have 100% identical contents.
 type DuplicateFolderGroup struct {
-	ID          string           `json:"id"` // Composite key: folderHash + "|" + size
-	FolderHash  string           `json:"folderHash"`
-	FolderSize  int64            `json:"folderSize"`
-	FileCount   int64            `json:"fileCount"`
-	FolderCount int              `json:"folderCount"`
-	WastedBytes int64            `json:"wastedBytes"` // (FolderCount - 1) * FolderSize
-	Folders     []*FolderSummary `json:"folders"`
+	ID            string           `json:"id"` // Composite key: folderHash + "|" + size
+	FolderHash    string           `json:"folderHash"`
+	FolderSize    int64            `json:"folderSize"`
+	FileCount     int64            `json:"fileCount"`
+	SubDirCount   int64            `json:"subDirCount"` // Total subdirectories inside this folder
+	FolderCount   int              `json:"folderCount"`
+	WastedBytes   int64            `json:"wastedBytes"` // (FolderCount - 1) * FolderSize
+	IsTopLevel    bool             `json:"isTopLevel"`  // True if root duplicate parent (not nested inside another clone group)
+	ParentGroupID string           `json:"parentGroupId,omitempty"`
+	Folders       []*FolderSummary `json:"folders"`
 }
 
 // FolderDuplicateIndex indexes and queries duplicate directories across scanned storage.
@@ -75,9 +78,14 @@ func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 				FolderHash:  summary.FolderContentHash,
 				FolderSize:  summary.TotalSize,
 				FileCount:   summary.FileCount,
+				SubDirCount: summary.SubDirCount,
+				IsTopLevel:  true,
 				Folders:     make([]*FolderSummary, 0, 2),
 			}
 			fidx.groups[key] = grp
+		}
+		if summary.SubDirCount > grp.SubDirCount {
+			grp.SubDirCount = summary.SubDirCount
 		}
 		grp.Folders = append(grp.Folders, summary)
 		grp.FolderCount = len(grp.Folders)
@@ -95,6 +103,40 @@ func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 			sort.Slice(grp.Folders, func(i, j int) bool {
 				return grp.Folders[i].Path < grp.Folders[j].Path
 			})
+		}
+	}
+
+	// Step 4: Detect hierarchy (IsTopLevel vs Sub-Duplicate)
+	type pathGroupRef struct {
+		path  string
+		group *DuplicateFolderGroup
+	}
+	var allPathRefs []pathGroupRef
+	for _, grp := range fidx.groups {
+		grp.IsTopLevel = true
+		for _, f := range grp.Folders {
+			normPath := strings.ToLower(filepath.Clean(f.Path))
+			allPathRefs = append(allPathRefs, pathGroupRef{path: normPath, group: grp})
+		}
+	}
+
+	// Sort path references by path length ascending (shorter paths are ancestors/parents)
+	sort.Slice(allPathRefs, func(i, j int) bool {
+		return len(allPathRefs[i].path) < len(allPathRefs[j].path)
+	})
+
+	for _, childRef := range allPathRefs {
+		childPath := childRef.path
+		for _, parentRef := range allPathRefs {
+			if parentRef.group.ID == childRef.group.ID {
+				continue
+			}
+			parentPath := parentRef.path
+			if len(childPath) > len(parentPath) && strings.HasPrefix(childPath, parentPath+string(filepath.Separator)) {
+				childRef.group.IsTopLevel = false
+				childRef.group.ParentGroupID = parentRef.group.ID
+				break
+			}
 		}
 	}
 }
@@ -175,21 +217,23 @@ func ComputeFolderContentHash(dirNode *scanner.DirNode) string {
 
 // FolderQueryFilter options for duplicate folder searches.
 type FolderQueryFilter struct {
-	SortBy  string `json:"sortBy"`  // "wasted_desc", "size_desc", "count_desc", "name_asc"
-	MinSize int64  `json:"minSize"` // Minimum folder size
-	Search  string `json:"search"`  // Search in path
-	Limit   int    `json:"limit"`
-	Offset  int    `json:"offset"`
+	SortBy       string `json:"sortBy"`       // "subdirs_desc", "wasted_desc", "files_desc", "size_desc", "count_desc", "name_asc"
+	MinSize      int64  `json:"minSize"`      // Minimum folder size
+	Search       string `json:"search"`       // Search in path
+	TopLevelOnly bool   `json:"topLevelOnly"` // Filter for top-level clone roots only
+	Limit        int    `json:"limit"`
+	Offset       int    `json:"offset"`
 }
 
 // FolderQueryResult represents duplicate folder search results.
 type FolderQueryResult struct {
-	TotalGroups  int                     `json:"totalGroups"`
-	TotalFolders int                     `json:"totalFolders"`
-	WastedBytes  int64                   `json:"wastedBytes"`
-	Groups       []*DuplicateFolderGroup `json:"groups"`
-	Offset       int                     `json:"offset"`
-	Limit        int                     `json:"limit"`
+	TotalGroups    int                     `json:"totalGroups"`
+	TotalFolders   int                     `json:"totalFolders"`
+	WastedBytes    int64                   `json:"wastedBytes"`
+	TopLevelGroups int                     `json:"topLevelGroups"`
+	Groups         []*DuplicateFolderGroup `json:"groups"`
+	Offset         int                     `json:"offset"`
+	Limit          int                     `json:"limit"`
 }
 
 // Query returns filtered duplicate folder groups.
@@ -200,10 +244,19 @@ func (fidx *FolderDuplicateIndex) Query(filter FolderQueryFilter) FolderQueryRes
 	var resultList []*DuplicateFolderGroup
 	var totalFolders int
 	var totalWasted int64
+	var topLevelCount int
 
 	searchLower := strings.ToLower(filter.Search)
 
 	for _, grp := range fidx.groups {
+		if grp.IsTopLevel {
+			topLevelCount++
+		}
+
+		if filter.TopLevelOnly && !grp.IsTopLevel {
+			continue
+		}
+
 		if filter.MinSize > 0 && grp.FolderSize < filter.MinSize {
 			continue
 		}
@@ -228,8 +281,35 @@ func (fidx *FolderDuplicateIndex) Query(filter FolderQueryFilter) FolderQueryRes
 
 	// Sorting
 	switch filter.SortBy {
+	case "subdirs_desc":
+		// Priority: Highest level / most subfolders first
+		sort.Slice(resultList, func(i, j int) bool {
+			if resultList[i].IsTopLevel != resultList[j].IsTopLevel {
+				return resultList[i].IsTopLevel
+			}
+			if resultList[i].SubDirCount != resultList[j].SubDirCount {
+				return resultList[i].SubDirCount > resultList[j].SubDirCount
+			}
+			if resultList[i].FileCount != resultList[j].FileCount {
+				return resultList[i].FileCount > resultList[j].FileCount
+			}
+			return resultList[i].WastedBytes > resultList[j].WastedBytes
+		})
+	case "files_desc":
+		sort.Slice(resultList, func(i, j int) bool {
+			if resultList[i].IsTopLevel != resultList[j].IsTopLevel {
+				return resultList[i].IsTopLevel
+			}
+			if resultList[i].FileCount != resultList[j].FileCount {
+				return resultList[i].FileCount > resultList[j].FileCount
+			}
+			return resultList[i].WastedBytes > resultList[j].WastedBytes
+		})
 	case "size_desc":
 		sort.Slice(resultList, func(i, j int) bool {
+			if resultList[i].IsTopLevel != resultList[j].IsTopLevel {
+				return resultList[i].IsTopLevel
+			}
 			return resultList[i].FolderSize > resultList[j].FolderSize
 		})
 	case "count_desc":
@@ -247,6 +327,12 @@ func (fidx *FolderDuplicateIndex) Query(filter FolderQueryFilter) FolderQueryRes
 		fallthrough
 	default:
 		sort.Slice(resultList, func(i, j int) bool {
+			if resultList[i].IsTopLevel != resultList[j].IsTopLevel {
+				return resultList[i].IsTopLevel
+			}
+			if resultList[i].SubDirCount != resultList[j].SubDirCount {
+				return resultList[i].SubDirCount > resultList[j].SubDirCount
+			}
 			return resultList[i].WastedBytes > resultList[j].WastedBytes
 		})
 	}
@@ -264,12 +350,13 @@ func (fidx *FolderDuplicateIndex) Query(filter FolderQueryFilter) FolderQueryRes
 	paginated := resultList[start:end]
 
 	return FolderQueryResult{
-		TotalGroups:  totalGroups,
-		TotalFolders: totalFolders,
-		WastedBytes:  totalWasted,
-		Groups:       paginated,
-		Offset:       start,
-		Limit:        filter.Limit,
+		TotalGroups:    totalGroups,
+		TotalFolders:   totalFolders,
+		WastedBytes:    totalWasted,
+		TopLevelGroups: topLevelCount,
+		Groups:         paginated,
+		Offset:         start,
+		Limit:          filter.Limit,
 	}
 }
 

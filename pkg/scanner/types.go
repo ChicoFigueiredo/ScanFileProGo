@@ -19,7 +19,8 @@ type FileNode struct {
 	Extension     string `json:"extension"`
 	IsSymlink     bool   `json:"isSymlink,omitempty"`
 	LinkTarget    string `json:"linkTarget,omitempty"`
-	IsCompressed  bool   `json:"isCompressed,omitempty"`
+	IsCompressed       bool   `json:"isCompressed,omitempty"`
+	IsReusedFromCache  bool   `json:"isReusedFromCache,omitempty"`
 }
 
 // DirNode represents a folder in the hierarchy, aggregating its children's stats.
@@ -61,12 +62,16 @@ type DirSummary struct {
 
 // ScanConfig holds parameters for initiating a scan.
 type ScanConfig struct {
-	Roots          []string `json:"roots"`          // List of drive roots or paths, e.g. ["C:\\", "D:\\"]
-	WorkerThreads  int      `json:"workerThreads"`  // Number of parallel scanner threads
-	HashAlgorithm  string   `json:"hashAlgorithm"`  // "xxhash" or "sha256"
-	HashAllFiles   bool     `json:"hashAllFiles"`   // If false, smartly hashes only duplicate candidates (same size)
-	MinSizeForHash int64    `json:"minSizeForHash"` // Ignore files smaller than this byte threshold (default 1)
-	FollowSymlinks bool     `json:"followSymlinks"`
+	Roots                   []string `json:"roots"`                   // List of drive roots or paths, e.g. ["C:\\", "D:\\"]
+	WorkerThreads           int      `json:"workerThreads"`           // Number of parallel scanner threads
+	HashAlgorithm           string   `json:"hashAlgorithm"`           // "xxhash" or "sha256"
+	HashAllFiles            bool     `json:"hashAllFiles"`            // If false, smartly hashes only duplicate candidates (same size)
+	MinSizeForHash          int64    `json:"minSizeForHash"`          // Ignore files smaller than this byte threshold (default 1)
+	FollowSymlinks          bool     `json:"followSymlinks"`
+	QuickScanMode           bool     `json:"quickScanMode,omitempty"`           // Incremental quick scan reusing existing hashes if path+size+modTime match
+	AutoSaveIntervalMinutes int      `json:"autoSaveIntervalMinutes,omitempty"` // Periodic autosave interval (0 = disabled, default 5)
+	AutoSaveOnComplete      bool     `json:"autoSaveOnComplete,omitempty"`      // Automatically save snapshot upon scan completion
+	AutoSavePath            string   `json:"autoSavePath,omitempty"`            // Custom target path for autosave (optional)
 }
 
 // ActiveWorker represents the real-time state of an individual worker thread.
@@ -125,6 +130,13 @@ type ScanStatus struct {
 	StartTime                  int64          `json:"startTime"`
 	ElapsedTimeSec             float64        `json:"elapsedTimeSec"`
 	IsWatching                 bool           `json:"isWatching"`
+	IsQuickScan                bool           `json:"isQuickScan,omitempty"`
+	ReusedFilesCount           int64          `json:"reusedFilesCount,omitempty"`
+	ReusedBytesCount           int64          `json:"reusedBytesCount,omitempty"`
+	ModifiedFilesCount         int64          `json:"modifiedFilesCount,omitempty"`
+	NewFilesCount              int64          `json:"newFilesCount,omitempty"`
+	LastAutoSaveTime           int64          `json:"lastAutoSaveTime,omitempty"`
+	AutoSaveFilePath           string         `json:"autoSaveFilePath,omitempty"`
 	ActiveWorkers              []ActiveWorker `json:"activeWorkers,omitempty"`
 	RecentFiles                []FileLogEntry `json:"recentFiles,omitempty"`
 	ErrorsCount                int            `json:"errorsCount"`

@@ -9,3 +9,8 @@ ScanFile_Webview_Profile/
 *.exe
 *.dll
 *.pdb
+
+# Saved scans & cache files
+saved_scans/
+*.sfz
+*.scanfile.gz

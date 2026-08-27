@@ -27,6 +27,13 @@ type Scanner struct {
 	scannedAllocatedBytes atomic.Int64
 	compressedFiles       atomic.Int64
 	errorsCount           atomic.Int64
+	reusedFiles           atomic.Int64
+	reusedBytes           atomic.Int64
+	modifiedFiles         atomic.Int64
+	newFiles              atomic.Int64
+
+	quickScanLookup map[string]*FileNode
+	quickLookupMu   sync.RWMutex
 
 	visitedDirs   sync.Map // map[string]bool canonical paths to prevent duplicate traversal & circular symlink loops
 	activeWorkers sync.Map // map[int]*ActiveWorker
@@ -48,6 +55,13 @@ func NewScanner(tree *TreeManager) *Scanner {
 	}
 }
 
+// SetQuickScanLookup configures previous snapshot files to enable fast O(1) hash reuse in QuickScanMode.
+func (s *Scanner) SetQuickScanLookup(lookup map[string]*FileNode) {
+	s.quickLookupMu.Lock()
+	defer s.quickLookupMu.Unlock()
+	s.quickScanLookup = lookup
+}
+
 // GetStatus returns a snapshot of the current scan progress.
 func (s *Scanner) GetStatus() ScanStatus {
 	s.statusMu.RLock()
@@ -64,6 +78,10 @@ func (s *Scanner) GetStatus() ScanStatus {
 		st.CompressionRatio = float64(st.TotalBytesScanned) / float64(st.TotalAllocatedBytesScanned)
 	}
 	st.ErrorsCount = int(s.errorsCount.Load())
+	st.ReusedFilesCount = s.reusedFiles.Load()
+	st.ReusedBytesCount = s.reusedBytes.Load()
+	st.ModifiedFilesCount = s.modifiedFiles.Load()
+	st.NewFilesCount = s.newFiles.Load()
 
 	// Collect active workers (if not in Phase 2 where Hasher updates ActiveWorkers directly)
 	if st.Phase != "phase2_hashing" {
@@ -165,6 +183,14 @@ func (s *Scanner) StartScan(ctx context.Context, config ScanConfig, onProgress f
 	s.scannedAllocatedBytes.Store(0)
 	s.compressedFiles.Store(0)
 	s.errorsCount.Store(0)
+	s.reusedFiles.Store(0)
+	s.reusedBytes.Store(0)
+	s.modifiedFiles.Store(0)
+	s.newFiles.Store(0)
+
+	s.statusMu.Lock()
+	s.Status.IsQuickScan = config.QuickScanMode
+	s.statusMu.Unlock()
 
 	s.recentMu.Lock()
 	s.recentFiles = make([]FileLogEntry, 0, 100)
@@ -438,6 +464,30 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 				CreateTime:    createTime,
 				AccessTime:    accessTime,
 				Extension:     ext,
+			}
+
+			// Quick Scan Hash & Metadata Reuse
+			if config.QuickScanMode {
+				s.quickLookupMu.RLock()
+				lookup := s.quickScanLookup
+				s.quickLookupMu.RUnlock()
+
+				if len(lookup) > 0 {
+					normPath := strings.ToLower(filepath.Clean(fullPath))
+					if cached, exists := lookup[normPath]; exists && cached != nil {
+						if cached.Size == size && cached.ModTime == modTime && cached.Hash != "" {
+							fileNode.Hash = cached.Hash
+							fileNode.QuickHash = cached.QuickHash
+							fileNode.IsReusedFromCache = true
+							s.reusedFiles.Add(1)
+							s.reusedBytes.Add(size)
+						} else {
+							s.modifiedFiles.Add(1)
+						}
+					} else {
+						s.newFiles.Add(1)
+					}
+				}
 			}
 
 			if isSymlinkOrJunction {

@@ -1,18 +1,12 @@
 {
   "selectedRoots": [
-    "C:\\",
-    "E:\\",
-    "L:\\",
-    "P:\\",
-    "T:\\",
-    "U:\\",
-    "Y:\\",
-    "Z:\\"
+    "C:\\"
   ],
   "workerThreads": 32,
   "hashAlgorithm": "sha256",
   "hashMode": "all",
   "minFileSize": 10485760,
+  "autoSaveIntervalMinutes": 5,
   "treemapDepth": 5,
   "treemapColorMode": "extension",
   "treemapViewMode": "split",
@@ -22,5 +16,11 @@
   "idleMinSizeBytes": 104857600,
   "folderSortBy": "wasted_desc",
   "folderMinSize": 0,
-  "uiZoom": 95
+  "uiZoom": 95,
+  "aiProvider": "",
+  "aiOllamaEndpoint": "",
+  "aiOllamaModel": "",
+  "aiOpenRouterKey": "",
+  "aiOpenRouterModel": "",
+  "aiDryRunDefault": false
 }

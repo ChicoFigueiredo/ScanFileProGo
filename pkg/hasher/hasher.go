@@ -109,6 +109,12 @@ func (h *Hasher) RunHashing(ctx context.Context, allFiles []*scanner.FileNode, o
 	if opts.HashAllFiles {
 		for _, f := range allFiles {
 			if f.Size >= opts.MinSize {
+				if f.Hash != "" {
+					// Already hashed and reused from cache (Quick Scan)
+					h.hashedFiles.Add(1)
+					h.hashedBytes.Add(f.Size)
+					continue
+				}
 				targetFiles = append(targetFiles, &FileCandidate{Node: f})
 			}
 		}
@@ -125,14 +131,24 @@ func (h *Hasher) RunHashing(ctx context.Context, allFiles []*scanner.FileNode, o
 		for _, files := range sizeMap {
 			if len(files) > 1 {
 				for _, f := range files {
+					if f.Hash != "" {
+						// Already hashed and reused from cache (Quick Scan)
+						h.hashedFiles.Add(1)
+						h.hashedBytes.Add(f.Size)
+						continue
+					}
 					targetFiles = append(targetFiles, &FileCandidate{Node: f})
 				}
 			}
 		}
 	}
 
-	totalToHash := int64(len(targetFiles))
-	if totalToHash == 0 {
+	totalToHash := int64(len(targetFiles)) + h.hashedFiles.Load()
+	if len(targetFiles) == 0 {
+		// All files were already hashed from cache
+		if opts.OnProgress != nil {
+			opts.OnProgress(totalToHash, totalToHash, h.hashedBytes.Load(), "Todos os hashes foram reaproveitados do cache com sucesso!", 0, nil, nil)
+		}
 		return nil
 	}
 

@@ -16,10 +16,12 @@ import (
 	"sync"
 	"time"
 
+	"scanfile/pkg/ai"
 	"scanfile/pkg/config"
 	"scanfile/pkg/drives"
 	"scanfile/pkg/hasher"
 	"scanfile/pkg/indexer"
+	"scanfile/pkg/mcp"
 	"scanfile/pkg/privileges"
 	"scanfile/pkg/recycle"
 	"scanfile/pkg/scanner"
@@ -34,6 +36,8 @@ type AppServer struct {
 	Index       *indexer.DuplicateIndex
 	FolderIndex *indexer.FolderDuplicateIndex
 	Watcher     *watcher.FSWatcher
+	MCPContext  *mcp.MCPToolsContext
+	AIAgent     *ai.AgentCoordinator
 	uiFS        fs.FS
 	httpServer  *http.Server
 	listener    net.Listener
@@ -53,6 +57,73 @@ type HasherManager struct {
 	mu     sync.RWMutex
 }
 
+type serverToolsExecutor struct {
+	mcpCtx *mcp.MCPToolsContext
+}
+
+func (ste *serverToolsExecutor) ExecuteTool(ctx context.Context, name string, argsJSON string) (string, *ai.ActionProposal, error) {
+	switch name {
+	case "classify_files":
+		var params mcp.ClassifyFilesParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		items, err := ste.mcpCtx.ClassifyFiles(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(items, "", "  ")
+		return string(data), nil, nil
+
+	case "analyze_file_content":
+		var params mcp.AnalyzeFileParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		res, err := ste.mcpCtx.AnalyzeFileContent(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return string(data), nil, nil
+
+	case "write_file_metadata":
+		var params mcp.WriteMetadataParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		meta, err := ste.mcpCtx.WriteFileMetadata(params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(meta, "", "  ")
+		return string(data), nil, nil
+
+	case "propose_actions":
+		var params mcp.ProposeActionParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		prop, err := ste.mcpCtx.ProposeActions(params)
+		if err != nil {
+			return "", nil, err
+		}
+		var aiProp *ai.ActionProposal
+		if prop != nil {
+			aiProp = &ai.ActionProposal{
+				ProposalID:  prop.ID,
+				ActionType:  prop.ActionType,
+				Description: prop.Description,
+				Files:       prop.Files,
+				FileCount:   prop.FileCount,
+				TotalBytes:  prop.TotalBytes,
+				TotalSize:   prop.TotalSize,
+				Category:    prop.Category,
+				DryRun:      prop.DryRun,
+				Executed:    prop.Executed,
+				CreatedAt:   prop.CreatedAt.Format(time.RFC3339),
+			}
+		}
+		data, _ := json.MarshalIndent(prop, "", "  ")
+		return string(data), aiProp, nil
+
+	default:
+		return fmt.Sprintf("Ferramenta desconhecida: %s", name), nil, nil
+	}
+}
+
 // NewAppServer creates and initializes an AppServer.
 func NewAppServer(uiFS fs.FS) *AppServer {
 	tree := scanner.NewTreeManager()
@@ -60,6 +131,17 @@ func NewAppServer(uiFS fs.FS) *AppServer {
 	fIdx := indexer.NewFolderDuplicateIndex()
 	sc := scanner.NewScanner(tree)
 	hEngine := hasher.NewHasher()
+	mcpCtx := mcp.NewMCPToolsContext(tree, idx, fIdx)
+	
+	cfg := config.LoadConfig()
+	toolsDefs := mcp.GetOpenAIToolDefinitions()
+	agent := ai.NewAgentCoordinator(
+		cfg.AIOllamaEndpoint,
+		cfg.AIOpenRouterKey,
+		"",
+		&serverToolsExecutor{mcpCtx: mcpCtx},
+		toolsDefs,
+	)
 
 	return &AppServer{
 		Tree:        tree,
@@ -67,6 +149,8 @@ func NewAppServer(uiFS fs.FS) *AppServer {
 		Hasher:      &HasherManager{Engine: hEngine},
 		Index:       idx,
 		FolderIndex: fIdx,
+		MCPContext:  mcpCtx,
+		AIAgent:     agent,
 		uiFS:        uiFS,
 		sseClients:  make(map[chan string]bool),
 		recentLogs:  make([]scanner.FSEventLog, 0, 100),
@@ -98,14 +182,23 @@ func (s *AppServer) Start(port int) (string, error) {
 	mux.HandleFunc("/api/system/privileges", s.handleGetPrivileges)
 	mux.HandleFunc("/api/system/elevate", s.handleElevateProcess)
 
-	// Cache Persistence Routes
+	// Cache Persistence & AutoSave Routes
 	mux.HandleFunc("/api/cache/save", s.handleSaveCache)
 	mux.HandleFunc("/api/cache/load", s.handleLoadCache)
 	mux.HandleFunc("/api/cache/list", s.handleListCaches)
+	mux.HandleFunc("/api/cache/autosave/status", s.handleGetAutoSaveStatus)
+	mux.HandleFunc("/api/cache/autosave/restore", s.handleRestoreAutoSave)
 
 	// Folder Comparison & Duplicate Folder Routes
 	mux.HandleFunc("/api/folders/duplicates", s.handleGetFolderDuplicates)
 	mux.HandleFunc("/api/folders/compare", s.handleCompareFolders)
+
+	// AI Assistant Routes
+	mux.HandleFunc("/api/ai/models", s.handleAIModels)
+	mux.HandleFunc("/api/ai/models/pull", s.handleAIPullModel)
+	mux.HandleFunc("/api/ai/chat", s.handleAIChat)
+	mux.HandleFunc("/api/ai/actions/execute", s.handleAIExecuteAction)
+	mux.HandleFunc("/api/ai/status", s.handleAIStatus)
 
 	// User Preferences Config Routes
 	mux.HandleFunc("/api/config", s.handleConfig)
@@ -298,6 +391,21 @@ func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
 	s.activeRoots = config.Roots
 	s.lastConfig = config
 
+	// Quick Scan Mode: Prepare fast lookup map from previous in-memory tree or latest autosave
+	if config.QuickScanMode {
+		var lookup map[string]*scanner.FileNode
+		if s.Tree != nil && s.Tree.GetTotalFileCount() > 0 {
+			lookup = scanner.BuildQuickScanLookup(&scanner.CacheSnapshot{Files: s.Tree.GetAllFiles()})
+		} else if autoInfo, err := scanner.GetLatestAutoSave("saved_scans"); err == nil {
+			if _, snap, err := scanner.LoadCacheFromFile(autoInfo.FilePath); err == nil {
+				lookup = scanner.BuildQuickScanLookup(snap)
+			}
+		}
+		s.Scanner.SetQuickScanLookup(lookup)
+	} else {
+		s.Scanner.SetQuickScanLookup(nil)
+	}
+
 	// Reset tree and index for fresh scan
 	s.Tree.Reset()
 	if s.Watcher != nil {
@@ -314,10 +422,50 @@ func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
 func (s *AppServer) orchestrateScan(config scanner.ScanConfig) {
 	ctx := context.Background()
 
+	// Periodic AutoSave Background Ticker
+	autoInterval := config.AutoSaveIntervalMinutes
+	if autoInterval <= 0 {
+		autoInterval = 5 // Default: autosave every 5 minutes
+	}
+	autoTicker := time.NewTicker(time.Duration(autoInterval) * time.Minute)
+	defer autoTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-autoTicker.C:
+				if s.Tree != nil && s.Tree.GetTotalFileCount() > 0 {
+					savedPath, err := scanner.SaveAutoSave(s.Tree, s.activeRoots, config, "saved_scans")
+					if err == nil {
+						now := time.Now().Unix()
+						s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+							st.LastAutoSaveTime = now
+							st.AutoSaveFilePath = savedPath
+						})
+						s.broadcastSSE("autosave_done", map[string]any{
+							"filePath": savedPath,
+							"time":     now,
+						})
+					}
+				}
+			}
+		}
+	}()
+
 	// PHASE 1: Metadata scan
 	_ = s.Scanner.StartScan(ctx, config, func(st scanner.ScanStatus) {
 		s.broadcastSSE("scan_progress", st)
 	})
+
+	// AutoSave immediately after Phase 1 finishes
+	if p1Path, err := scanner.SaveAutoSave(s.Tree, s.activeRoots, config, "saved_scans"); err == nil {
+		s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+			st.LastAutoSaveTime = time.Now().Unix()
+			st.AutoSaveFilePath = p1Path
+		})
+	}
 
 	// Get all scanned files
 	allFiles := s.Tree.GetAllFiles()
@@ -360,6 +508,14 @@ func (s *AppServer) orchestrateScan(config scanner.ScanConfig) {
 	// Rebuild duplicate folder index
 	s.FolderIndex.RebuildFolderIndex(s.Tree)
 	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
+
+	// AutoSave after Phase 2 / full scan completion
+	if finalPath, err := scanner.SaveAutoSave(s.Tree, s.activeRoots, config, "saved_scans"); err == nil {
+		s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+			st.LastAutoSaveTime = time.Now().Unix()
+			st.AutoSaveFilePath = finalPath
+		})
+	}
 
 	s.Scanner.SetStatus(func(st *ScanStatus) {
 		st.Phase = "completed"
@@ -404,6 +560,76 @@ func (s *AppServer) orchestrateScan(config scanner.ScanConfig) {
 		})
 		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 	}
+}
+
+func (s *AppServer) handleGetAutoSaveStatus(w http.ResponseWriter, r *http.Request) {
+	info, err := scanner.GetLatestAutoSave("saved_scans")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"exists": false})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"exists":   true,
+		"autoSave": info,
+	})
+}
+
+func (s *AppServer) handleRestoreAutoSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	info, err := scanner.GetLatestAutoSave("saved_scans")
+	if err != nil {
+		http.Error(w, "Nenhum arquivo de autosave encontrado", http.StatusNotFound)
+		return
+	}
+
+	tm, snapshot, err := scanner.LoadCacheFromFile(info.FilePath)
+	if err != nil {
+		http.Error(w, "Erro ao carregar autosave: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.Tree = tm
+	s.activeRoots = snapshot.Roots
+	s.lastConfig = snapshot.ScanSettings
+
+	allFiles := s.Tree.GetAllFiles()
+	s.Index.RebuildIndex(allFiles)
+	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
+
+	s.FolderIndex.RebuildFolderIndex(s.Tree)
+	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
+
+	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+		st.Phase = "completed"
+		st.CurrentPath = fmt.Sprintf("Autosave restaurado com sucesso (%d arquivos).", snapshot.TotalFiles)
+		st.TotalFilesScanned = snapshot.TotalFiles
+		st.TotalDirsScanned = snapshot.TotalDirs
+		st.TotalBytesScanned = snapshot.TotalBytes
+		st.TotalAllocatedBytesScanned = snapshot.TotalAllocatedBytes
+		st.DuplicateGroupsCount = grpCount
+		st.DuplicateFilesCount = fileCount
+		st.DuplicateWastedBytes = wasted
+		st.DuplicateFolderGroupsCount = fGrpCount
+		st.DuplicateFoldersCount = fCount
+		st.DuplicateFolderWastedBytes = fWasted
+		st.ProgressPercent = 100
+		st.LastAutoSaveTime = info.ModTime.Unix()
+		st.AutoSaveFilePath = info.FilePath
+	})
+
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":   "restored",
+		"snapshot": snapshot,
+	})
 }
 
 // SaveCacheReq parameters for saving in-memory cache to disk.
@@ -532,12 +758,21 @@ func (s *AppServer) handleGetFolderDuplicates(w http.ResponseWriter, r *http.Req
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
+	if limit <= 0 {
+		limit = 100 // Safe default so server never exhausts memory on huge scans
+	} else if limit > 500 {
+		limit = 500
+	}
+
+	topLevelOnly := q.Get("topLevelOnly") == "true" || q.Get("topLevelOnly") == "1"
+
 	filter := indexer.FolderQueryFilter{
-		SortBy:  sortBy,
-		MinSize: minSize,
-		Search:  search,
-		Limit:   limit,
-		Offset:  offset,
+		SortBy:       sortBy,
+		MinSize:      minSize,
+		Search:       search,
+		TopLevelOnly: topLevelOnly,
+		Limit:        limit,
+		Offset:       offset,
 	}
 
 	res := s.FolderIndex.Query(filter)
@@ -644,6 +879,12 @@ func (s *AppServer) handleGetDuplicates(w http.ResponseWriter, r *http.Request) 
 	search := q.Get("search")
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
+
+	if limit <= 0 {
+		limit = 100 // Safe default
+	} else if limit > 500 {
+		limit = 500
+	}
 
 	filter := indexer.QueryFilter{
 		SortBy:    sortBy,
@@ -886,5 +1127,166 @@ func (s *AppServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := config.LoadConfig()
 	_ = json.NewEncoder(w).Encode(cfg)
 }
+
+// =========================================================================
+// AI ASSISTANT & MCP HANDLERS
+// =========================================================================
+
+func (s *AppServer) handleAIModels(w http.ResponseWriter, r *http.Request) {
+	cfg := config.LoadConfig()
+	catalog := ai.BuildCatalog(r.Context(), cfg.AIOllamaEndpoint)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(catalog)
+}
+
+func (s *AppServer) handleAIStatus(w http.ResponseWriter, r *http.Request) {
+	cfg := config.LoadConfig()
+	tags, ver, err := s.AIAgent.OllamaClient.ListInstalledModels(r.Context())
+	
+	status := map[string]interface{}{
+		"ollamaOnline":    err == nil,
+		"ollamaVersion":   ver,
+		"ollamaEndpoint":  cfg.AIOllamaEndpoint,
+		"installedCount":  len(tags),
+		"installedModels": tags,
+		"hasOpenRouterKey": cfg.AIOpenRouterKey != "",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+func (s *AppServer) handleAIPullModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model == "" {
+		http.Error(w, "Nome do modelo é obrigatório", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	err := s.AIAgent.OllamaClient.PullModel(r.Context(), req.Model, func(p ai.PullProgress) {
+		data, _ := json.Marshal(p)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	})
+
+	if err != nil {
+		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
+		fmt.Fprintf(w, "data: %s\n\n", string(errData))
+		flusher.Flush()
+		return
+	}
+
+	doneData, _ := json.Marshal(map[string]interface{}{"status": "success", "percent": 100})
+	fmt.Fprintf(w, "data: %s\n\n", string(doneData))
+	flusher.Flush()
+}
+
+func (s *AppServer) handleAIChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ai.ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Payload JSON inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	cfg := config.LoadConfig()
+	if req.Provider == "" {
+		req.Provider = ai.ProviderType(cfg.AIProvider)
+		if req.Provider == "" {
+			req.Provider = ai.ProviderOllama
+		}
+	}
+	if req.Model == "" {
+		if req.Provider == ai.ProviderOpenRouter {
+			req.Model = cfg.AIOpenRouterModel
+		} else {
+			req.Model = cfg.AIOllamaModel
+		}
+	}
+
+	// Update live clients in Agent with latest config
+	s.AIAgent.OllamaClient = ai.NewOllamaClient(cfg.AIOllamaEndpoint)
+	s.AIAgent.OpenRouter = ai.NewOpenRouterClient(cfg.AIOpenRouterKey)
+
+	systemPrompt := ai.BuildSystemPrompt(s.Tree, s.Index, req.SelectedFolder)
+
+	// Stream responses via SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, hasFlusher := w.(http.Flusher)
+
+	_, err := s.AIAgent.RunAgentExecution(r.Context(), req, systemPrompt, func(event ai.StreamEvent) {
+		if hasFlusher {
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(w, "data: %s\n\n", string(data))
+			flusher.Flush()
+		}
+	})
+
+	if err != nil {
+		if hasFlusher {
+			errEvent, _ := json.Marshal(ai.StreamEvent{
+				Type:    "error",
+				Content: err.Error(),
+			})
+			fmt.Fprintf(w, "data: %s\n\n", string(errEvent))
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *AppServer) handleAIExecuteAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ai.ActionExecuteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ProposalID == "" {
+		http.Error(w, "proposalId é obrigatório", http.StatusBadRequest)
+		return
+	}
+
+	proposal, err := s.MCPContext.ExecuteProposal(req.ProposalID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Falha ao executar proposta %s: %v", req.ProposalID, err), http.StatusInternalServerError)
+		return
+	}
+
+	res := ai.ActionExecuteResult{
+		Success:    proposal.Executed,
+		ActionType: proposal.ActionType,
+		Affected:   proposal.FileCount,
+		FreedBytes: proposal.TotalBytes,
+		FreedSize:  proposal.TotalSize,
+		Message:    fmt.Sprintf("Ação %s executada com sucesso para %d arquivos.", proposal.ActionType, proposal.FileCount),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
 
 

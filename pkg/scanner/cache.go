@@ -12,17 +12,29 @@ import (
 	"time"
 )
 
-// CacheSnapshot represents a persistent snapshot of the scan tree and file hashes.
+const (
+	// CurrentCacheVersion represents the active snapshot format version.
+	CurrentCacheVersion = 2
+
+	// DefaultAutoSaveFileName is the primary autosave filename.
+	DefaultAutoSaveFileName = "autosave_latest.sfz"
+
+	// BackupAutoSaveFileName is the rollback autosave filename.
+	BackupAutoSaveFileName = "autosave_previous.sfz"
+)
+
+// CacheSnapshot represents a persistent, versioned snapshot of the scan tree and file hashes.
 type CacheSnapshot struct {
-	Version      int              `json:"version"`
-	Timestamp    time.Time        `json:"timestamp"`
-	Roots        []string         `json:"roots"`
-	TotalFiles   int64            `json:"totalFiles"`
-	TotalDirs    int64            `json:"totalDirs"`
-	TotalBytes   int64            `json:"totalBytes"`
-	Files        []*FileNode      `json:"files"`
-	Directories  []string         `json:"directories,omitempty"` // Preserves empty folders
-	ScanSettings ScanConfig       `json:"scanSettings,omitempty"`
+	Version             int         `json:"version"`
+	Timestamp           time.Time   `json:"timestamp"`
+	Roots               []string    `json:"roots"`
+	TotalFiles          int64       `json:"totalFiles"`
+	TotalDirs           int64       `json:"totalDirs"`
+	TotalBytes          int64       `json:"totalBytes"`
+	TotalAllocatedBytes int64       `json:"totalAllocatedBytes,omitempty"`
+	Files               []*FileNode `json:"files"`
+	Directories         []string    `json:"directories,omitempty"` // Preserves empty folders
+	ScanSettings        ScanConfig  `json:"scanSettings,omitempty"`
 }
 
 // CacheFileInfo represents metadata for a saved cache file on disk.
@@ -31,16 +43,23 @@ type CacheFileInfo struct {
 	FilePath  string    `json:"filePath"`
 	SizeBytes int64     `json:"sizeBytes"`
 	ModTime   time.Time `json:"modTime"`
+	IsAutoSave bool     `json:"isAutoSave,omitempty"`
 }
 
-// ExportCache serializes the TreeManager and all file metadata/hashes to a gzip-compressed writer.
+// ExportCache serializes the TreeManager and all file metadata/hashes to a gzip-compressed writer (Level: BestSpeed/Default).
 func ExportCache(tm *TreeManager, roots []string, config ScanConfig, w io.Writer) error {
 	allFiles := tm.GetAllFiles()
 	var allDirs []string
 
 	var totalBytes int64
+	var totalAllocated int64
 	for _, f := range allFiles {
 		totalBytes += f.Size
+		if f.AllocatedSize > 0 {
+			totalAllocated += f.AllocatedSize
+		} else {
+			totalAllocated += f.Size
+		}
 	}
 
 	// Collect all directory paths
@@ -51,18 +70,22 @@ func ExportCache(tm *TreeManager, roots []string, config ScanConfig, w io.Writer
 	})
 
 	snapshot := CacheSnapshot{
-		Version:      1,
-		Timestamp:    time.Now(),
-		Roots:        roots,
-		TotalFiles:   int64(len(allFiles)),
-		TotalDirs:    int64(len(allDirs)),
-		TotalBytes:   totalBytes,
-		Files:        allFiles,
-		Directories:  allDirs,
-		ScanSettings: config,
+		Version:             CurrentCacheVersion,
+		Timestamp:           time.Now(),
+		Roots:               roots,
+		TotalFiles:          int64(len(allFiles)),
+		TotalDirs:           int64(len(allDirs)),
+		TotalBytes:          totalBytes,
+		TotalAllocatedBytes: totalAllocated,
+		Files:               allFiles,
+		Directories:         allDirs,
+		ScanSettings:        config,
 	}
 
-	gzWriter := gzip.NewWriter(w)
+	gzWriter, err := gzip.NewWriterLevel(w, gzip.DefaultCompression)
+	if err != nil {
+		gzWriter = gzip.NewWriter(w)
+	}
 	defer gzWriter.Close()
 
 	enc := json.NewEncoder(gzWriter)
@@ -103,7 +126,54 @@ func SaveCacheToFile(tm *TreeManager, roots []string, config ScanConfig, targetP
 	return nil
 }
 
-// ImportCache reads and reconstructs a TreeManager from a gzip-compressed or plain JSON reader.
+// SaveAutoSave atomically writes an autosave snapshot and rotates the previous autosave backup.
+func SaveAutoSave(tm *TreeManager, roots []string, config ScanConfig, targetDir string) (string, error) {
+	if targetDir == "" {
+		targetDir = "saved_scans"
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return "", fmt.Errorf("falha ao criar pasta de autosave: %w", err)
+	}
+
+	tempPath := filepath.Join(targetDir, "autosave_temp.sfz")
+	latestPath := filepath.Join(targetDir, DefaultAutoSaveFileName)
+	backupPath := filepath.Join(targetDir, BackupAutoSaveFileName)
+
+	// Step 1: Write to temporary file
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return "", fmt.Errorf("falha ao criar arquivo temporário de autosave: %w", err)
+	}
+
+	if err := ExportCache(tm, roots, config, file); err != nil {
+		file.Close()
+		_ = os.Remove(tempPath)
+		return "", fmt.Errorf("falha ao serializar autosave: %w", err)
+	}
+	file.Close()
+
+	// Step 2: Rotate latest to backup if latest exists
+	if _, err := os.Stat(latestPath); err == nil {
+		_ = os.Remove(backupPath) // Remove old backup if any
+		_ = os.Rename(latestPath, backupPath)
+	}
+
+	// Step 3: Rename temp to latest (Atomic swap)
+	if err := os.Rename(tempPath, latestPath); err != nil {
+		// Fallback: If direct rename fails, copy and remove
+		data, rErr := os.ReadFile(tempPath)
+		if rErr == nil {
+			_ = os.WriteFile(latestPath, data, 0644)
+			_ = os.Remove(tempPath)
+		} else {
+			return "", fmt.Errorf("falha ao finalizar autosave atômico: %w", err)
+		}
+	}
+
+	return latestPath, nil
+}
+
+// ImportCache reads and reconstructs a TreeManager from a gzip-compressed (.sfz, .scanfile.gz) or plain JSON reader with retrocompatibility.
 func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 	// Try reading as Gzip first
 	var reader io.Reader
@@ -122,6 +192,11 @@ func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 		return nil, nil, fmt.Errorf("formato de arquivo de cache inválido ou corrompido: %w", err)
 	}
 
+	// Migrate version 1 to current version defaults
+	if snapshot.Version == 0 {
+		snapshot.Version = 1
+	}
+
 	tm := NewTreeManager()
 
 	// Initialize roots
@@ -137,6 +212,10 @@ func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 	// Insert files directly into their respective directory nodes
 	dirMap := make(map[string][]*FileNode)
 	for _, f := range snapshot.Files {
+		// Retrocompatibility: calculate AllocatedSize if missing
+		if f.AllocatedSize == 0 && f.Size > 0 && !f.IsCompressed {
+			f.AllocatedSize = f.Size
+		}
 		dir := filepath.Dir(f.Path)
 		dirMap[dir] = append(dirMap[dir], f)
 	}
@@ -165,8 +244,61 @@ func LoadCacheFromFile(filePath string) (*TreeManager, *CacheSnapshot, error) {
 	return ImportCache(file)
 }
 
-// ListSavedCaches discovers all saved cache files in the given directory.
+// BuildQuickScanLookup builds a fast index map from a CacheSnapshot to allow O(1) hash and metadata reuse during Quick Scan.
+func BuildQuickScanLookup(snapshot *CacheSnapshot) map[string]*FileNode {
+	if snapshot == nil || len(snapshot.Files) == 0 {
+		return make(map[string]*FileNode)
+	}
+
+	lookup := make(map[string]*FileNode, len(snapshot.Files))
+	for _, f := range snapshot.Files {
+		if f == nil || f.Path == "" {
+			continue
+		}
+		normPath := strings.ToLower(filepath.Clean(f.Path))
+		lookup[normPath] = f
+	}
+	return lookup
+}
+
+// GetLatestAutoSave discovers if an active autosave is available in targetDir.
+func GetLatestAutoSave(dirPath string) (*CacheFileInfo, error) {
+	if dirPath == "" {
+		dirPath = "saved_scans"
+	}
+	latestPath := filepath.Join(dirPath, DefaultAutoSaveFileName)
+	info, err := os.Stat(latestPath)
+	if err == nil && info.Size() > 0 {
+		return &CacheFileInfo{
+			FileName:   DefaultAutoSaveFileName,
+			FilePath:   latestPath,
+			SizeBytes:  info.Size(),
+			ModTime:    info.ModTime(),
+			IsAutoSave: true,
+		}, nil
+	}
+
+	// Fallback to previous backup if latest is missing
+	backupPath := filepath.Join(dirPath, BackupAutoSaveFileName)
+	bInfo, bErr := os.Stat(backupPath)
+	if bErr == nil && bInfo.Size() > 0 {
+		return &CacheFileInfo{
+			FileName:   BackupAutoSaveFileName,
+			FilePath:   backupPath,
+			SizeBytes:  bInfo.Size(),
+			ModTime:    bInfo.ModTime(),
+			IsAutoSave: true,
+		}, nil
+	}
+
+	return nil, os.ErrNotExist
+}
+
+// ListSavedCaches discovers all saved cache and autosave files in the given directory.
 func ListSavedCaches(dirPath string) ([]CacheFileInfo, error) {
+	if dirPath == "" {
+		dirPath = "saved_scans"
+	}
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		return []CacheFileInfo{}, nil
 	}
@@ -182,17 +314,18 @@ func ListSavedCaches(dirPath string) ([]CacheFileInfo, error) {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasSuffix(name, ".scanfile.gz") || strings.HasSuffix(name, ".scanfile") || strings.HasSuffix(name, ".json.gz") || strings.HasSuffix(name, ".json") {
+		if strings.HasSuffix(name, ".sfz") || strings.HasSuffix(name, ".scanfile.gz") || strings.HasSuffix(name, ".scanfile") || strings.HasSuffix(name, ".json.gz") || strings.HasSuffix(name, ".json") {
 			info, err := entry.Info()
 			if err != nil {
 				continue
 			}
 			fullPath := filepath.Join(dirPath, name)
 			list = append(list, CacheFileInfo{
-				FileName:  name,
-				FilePath:  fullPath,
-				SizeBytes: info.Size(),
-				ModTime:   info.ModTime(),
+				FileName:   name,
+				FilePath:   fullPath,
+				SizeBytes:  info.Size(),
+				ModTime:    info.ModTime(),
+				IsAutoSave: strings.HasPrefix(name, "autosave_"),
 			})
 		}
 	}

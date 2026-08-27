@@ -34,6 +34,21 @@ func (tm *TreeManager) RootsLock(fn func(roots map[string]*DirNode)) {
 	fn(tm.Roots)
 }
 
+// GetTotalFileCount returns the aggregated total number of files across all roots.
+func (tm *TreeManager) GetTotalFileCount() int64 {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	var total int64
+	for _, root := range tm.Roots {
+		if root != nil {
+			root.mu.RLock()
+			total += root.FileCount
+			root.mu.RUnlock()
+		}
+	}
+	return total
+}
+
 // GetOrCreateRoot returns or creates the root directory node for a drive/folder.
 func (tm *TreeManager) GetOrCreateRoot(rootPath string) *DirNode {
 	clean := filepath.Clean(rootPath)

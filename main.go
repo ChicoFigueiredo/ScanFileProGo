@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"scanfile/pkg/mcp"
 	"scanfile/pkg/privileges"
 	"scanfile/pkg/server"
 )
@@ -38,6 +39,7 @@ func main() {
 	flagAdmin := flag.Bool("admin", false, "Executa diretamente como Administrador (solicita elevação UAC se necessário)")
 	flagPort := flag.Int("port", 0, "Porta HTTP do servidor (0 para porta aleatória disponível)")
 	flagNoWindow := flag.Bool("no-window", false, "Inicia apenas o servidor de backend sem abrir janela gráfica")
+	flagMCP := flag.Bool("mcp", false, "Executa o servidor Model Context Protocol (MCP) via Stdio para conexão com Claude Desktop/Antigravity/Cursor")
 	flagElevatedChild := flag.Bool("elevated-child", false, "Flag interna de instância filha elevada")
 	flagIPCAddr := flag.String("ipc-addr", "", "Endereço IPC interno para redirecionar saída ao console pai")
 	flagParentPID := flag.Int("parent-pid", 0, "PID do processo pai para encerramento automático sem processos zumbis")
@@ -45,6 +47,15 @@ func main() {
 
 	if *flagVersion {
 		fmt.Printf("ScanFile Pro v%s (commit: %s, built: %s)\n", Version, Commit, Date)
+		return
+	}
+
+	// MCP Server Mode over Stdio
+	if *flagMCP {
+		mcpCtx := mcp.NewMCPToolsContext(nil, nil, nil)
+		if err := mcp.StartStdioServer(mcpCtx); err != nil {
+			log.Fatalf("Erro no servidor MCP: %v", err)
+		}
 		return
 	}
 

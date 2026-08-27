@@ -97,6 +97,11 @@
         Monitor do SO
         <span id="eventCountBadge" class="badge-counter">0</span>
       </button>
+      <button class="nav-tab ai-tab-btn" data-tab="aiTab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path><rect x="3" y="8" width="18" height="12" rx="2"></rect><circle cx="9" cy="13" r="1.5"></circle><circle cx="15" cy="13" r="1.5"></circle><path d="M9 17h6"></path></svg>
+        Assistente IA
+        <span class="badge-ai-mcp">MCP</span>
+      </button>
     </nav>
   </header>
 
@@ -162,12 +167,43 @@
               <option value="10485760">Acima de 10 MB</option>
             </select>
           </div>
+
+          <div class="config-group">
+            <label for="autoSaveInterval">Auto-Save do Cache:</label>
+            <select id="autoSaveInterval" class="form-select">
+              <option value="5" selected>💾 A cada 5 minutos (Recomendado)</option>
+              <option value="2">💾 A cada 2 minutos (Frequente)</option>
+              <option value="10">💾 A cada 10 minutos</option>
+              <option value="15">💾 A cada 15 minutos</option>
+              <option value="0">Desativado</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- AutoSave Detection Banner -->
+        <div id="autoSaveBanner" class="autosave-card-banner hidden">
+          <div class="autosave-card-left">
+            <span class="autosave-icon">💾</span>
+            <div class="autosave-text">
+              <strong>Scan Salvo Automaticamente Detectado</strong>
+              <span id="autoSaveDetailsText">Arquivo: autosave_latest.sfz &bull; Salvo recentemente</span>
+            </div>
+          </div>
+          <div class="autosave-actions">
+            <button id="btnBannerRestore" class="btn btn-primary btn-sm">Abrir Cache</button>
+            <button id="btnBannerQuickScan" class="btn btn-quick-scan btn-sm">⚡ Quick Scan</button>
+            <button id="btnBannerDismiss" class="btn btn-secondary btn-sm" title="Ignorar">✕</button>
+          </div>
         </div>
 
         <div class="scan-actions-bar">
-          <button id="btnStartScan" class="btn btn-primary btn-lg">
+          <button id="btnStartScan" class="btn btn-primary btn-lg" title="Inicia varredura completa de metadados e hashes">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-            Iniciar Varredura Multithread
+            Iniciar Varredura Completa
+          </button>
+          <button id="btnQuickScan" class="btn btn-quick-scan btn-lg" title="Atualização Rápida: reaproveita hashes de arquivos inalterados (mesmo caminho, tamanho e data)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            ⚡ Quick Scan (Atualização Rápida)
           </button>
           <button id="btnCancelScan" class="btn btn-danger btn-lg hidden">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"></rect></svg>
@@ -181,6 +217,8 @@
         <div class="hud-header">
           <div class="hud-phase-row">
             <div class="hud-phase-badge" id="hudPhaseBadge">Fase 1: Mapeamento de Metadados</div>
+            <div id="hudQuickScanBadge" class="hud-quick-badge hidden">⚡ Quick Scan (Incremental)</div>
+            <div id="hudAutoSaveBadge" class="hud-autosave-badge hidden">💾 Auto-Salvo</div>
             <div id="hudErrorsBadge" class="hud-error-badge hidden">0 Arquivos Bloqueados / Ignorados</div>
           </div>
           <div class="hud-stats-row">
@@ -199,6 +237,14 @@
             <div class="hud-stat-box">
               <span class="stat-label">Físico em Disco</span>
               <span class="stat-val" id="statAllocatedBytes">0 B</span>
+            </div>
+            <div class="hud-stat-box" id="boxReusedFiles" style="display: none;">
+              <span class="stat-label">Reaproveitados</span>
+              <span class="stat-val" id="statReusedFiles" style="color: #fbbf24;">0</span>
+            </div>
+            <div class="hud-stat-box" id="boxNewModifiedFiles" style="display: none;">
+              <span class="stat-label">Novos / Modificados</span>
+              <span class="stat-val" id="statNewModifiedFiles" style="color: #38bdf8;">0</span>
             </div>
             <div class="hud-stat-box">
               <span class="stat-label">Comprimidos (NTFS)</span>
@@ -515,10 +561,12 @@
           <div class="dup-toolbar">
             <div class="dup-filters">
               <select id="dupFolderSortBy" class="form-select form-select-sm">
-                <option value="wasted_desc" selected>Maior Espaço Desperdiçado</option>
-                <option value="size_desc">Maior Tamanho de Pasta</option>
-                <option value="count_desc">Mais Cópias de Pastas</option>
-                <option value="name_asc">Nome da Pasta (A-Z)</option>
+                <option value="subdirs_desc" selected>🌳 Mais Subpastas / Níveis (Maior Hierarquia)</option>
+                <option value="wasted_desc">💰 Maior Espaço Desperdiçado</option>
+                <option value="files_desc">📄 Mais Arquivos Contidos</option>
+                <option value="size_desc">💾 Maior Tamanho de Pasta</option>
+                <option value="count_desc">👯 Mais Cópias de Pastas</option>
+                <option value="name_asc">🔤 Nome da Pasta (A-Z)</option>
               </select>
 
               <select id="dupFolderMinSize" class="form-select form-select-sm">
@@ -530,6 +578,11 @@
               </select>
 
               <input type="text" id="dupFolderSearch" class="form-input form-input-sm" placeholder="Buscar no caminho da pasta...">
+
+              <label class="form-checkbox-label" title="Ocultar subpastas que já estão contidas dentro de uma pasta clone maior (ex: mostra apenas a pasta raiz do clone)" style="display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; color: var(--text-primary); cursor: pointer; user-select: none; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.35rem 0.65rem; border-radius: var(--radius-sm);">
+                <input type="checkbox" id="chkFolderTopLevelOnly" checked style="width: 15px; height: 15px; accent-color: var(--accent-cyan); cursor: pointer;">
+                <span style="font-weight: 600;">⭐ Apenas Pastas Raiz (Ocultar Subpastas)</span>
+              </label>
             </div>
             <div class="dup-batch-actions">
               <button id="btnRefreshFolderDuplicates" class="btn btn-secondary btn-sm">Atualizar Pastas</button>
@@ -737,7 +790,156 @@
       </div>
     </section>
 
+    <!-- TAB 8: AI ASSISTANT & MCP AGENT -->
+    <section id="aiTab" class="tab-pane">
+      <div class="ai-container">
+        <!-- AI Top Bar Controls -->
+        <div class="ai-top-bar">
+          <div class="ai-provider-selector">
+            <span class="ai-control-label">Provedor:</span>
+            <div class="ai-btn-group">
+              <button class="btn btn-sm btn-ai-provider active" data-provider="ollama">
+                <span class="provider-dot online" id="ollamaStatusDot"></span> 🦙 Ollama Local
+              </button>
+              <button class="btn btn-sm btn-ai-provider" data-provider="openrouter">
+                <span class="provider-dot" id="openrouterStatusDot"></span> 🌐 OpenRouter (Nuvem)
+              </button>
+              <button class="btn btn-sm btn-ai-provider" data-provider="direct">
+                <span class="provider-dot" id="directStatusDot"></span> ⚡ Direto (In-Process)
+              </button>
+            </div>
+          </div>
+
+          <div class="ai-model-selector-group">
+            <span class="ai-control-label">Modelo Selecionado:</span>
+            <div class="select-with-btn">
+              <select id="aiModelSelect" class="form-select form-select-sm">
+                <option value="qwen2.5:1.5b" selected>Qwen 2.5 (1.5B) - ~1.2 GB RAM (Recomendado)</option>
+              </select>
+              <button id="btnPullSelectedModel" class="btn btn-secondary btn-sm hidden" title="Baixar modelo local no Ollama">
+                ⬇️ Baixar Modelo
+              </button>
+            </div>
+          </div>
+
+          <div class="ai-top-actions">
+            <button id="btnOpenAIConfigModal" class="btn btn-secondary btn-sm" title="Configurações de IA e Chaves de API">
+              ⚙️ Configurações de IA
+            </button>
+          </div>
+        </div>
+
+        <!-- Pull Progress Bar (Visible during download) -->
+        <div id="aiPullProgressContainer" class="ai-pull-progress-card hidden">
+          <div class="pull-progress-header">
+            <span id="pullModelTitle">Baixando modelo...</span>
+            <span id="pullModelPercent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="pullProgressBar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <small id="pullModelStatus" class="pull-status-text">Iniciando download via Ollama daemon...</small>
+        </div>
+
+        <!-- Main AI Workspace (Chat + Side Catalog) -->
+        <div class="ai-workspace">
+          <!-- Left: Chat View -->
+          <div class="ai-chat-card">
+            <div class="ai-chat-header">
+              <div class="ai-chat-title">
+                <h3>💬 Agente ReAct & Ferramentas MCP</h3>
+                <p>O assistente pode classificar arquivos, inspecionar PDFs/SQLite e propor ações com segurança</p>
+              </div>
+              <div class="ai-chat-header-actions">
+                <button id="btnClearAIChat" class="btn btn-secondary btn-sm">Limpar Conversa</button>
+              </div>
+            </div>
+
+            <!-- Messages Stream Container -->
+            <div id="aiMessagesContainer" class="ai-messages-feed">
+              <div class="ai-welcome-message">
+                <div class="ai-avatar">🤖</div>
+                <div class="ai-bubble">
+                  <h4>Olá! Sou o Assistente de Inteligência do ScanFile Pro.</h4>
+                  <p>Estou conectado ao protocolo <strong>Model Context Protocol (MCP)</strong> e posso operar com modelos locais no <strong>Ollama</strong> (até 16GB) ou modelos de ponta no <strong>OpenRouter</strong>.</p>
+                  <div class="ai-quick-prompts">
+                    <button class="ai-prompt-chip" data-prompt="Ache todas as duplicatas maiores que 50MB e gere uma proposta de limpeza">
+                      🔍 Achar duplicatas &gt; 50MB
+                    </button>
+                    <button class="ai-prompt-chip" data-prompt="Classifique os maiores arquivos deste disco por tipo e resuma o espaço">
+                      📊 Classificar maiores arquivos
+                    </button>
+                    <button class="ai-prompt-chip" data-prompt="Quais são os arquivos ociosos há mais de 1 ano que estão ocupando mais espaço?">
+                      ⏳ Arquivos ociosos &gt; 1 ano
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chat Input Area -->
+            <div class="ai-input-area">
+              <div class="ai-input-wrapper">
+                <textarea id="aiPromptInput" class="ai-textarea" rows="2" placeholder="Peça para a IA classificar arquivos, inspecionar documentos ou sugerir limpezas... (Pressione Enter para enviar)"></textarea>
+                <button id="btnSendAIMessage" class="btn btn-primary btn-ai-send">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                  Enviar
+                </button>
+              </div>
+              <div class="ai-input-footer">
+                <span class="ai-footer-hint">🔒 Modo de segurança com <strong>Simulação (Dry-Run)</strong> ativado. Nenhuma alteração real no disco sem sua aprovação.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Models Catalog (up to 16GB) -->
+          <div class="ai-catalog-card">
+            <div class="ai-catalog-header">
+              <h4>📚 Catálogo de Modelos (Até 16GB)</h4>
+              <p>Modelos otimizados para Tool Calling e execução local</p>
+            </div>
+            <div id="aiModelsList" class="ai-models-list">
+              <!-- Dynamically rendered via JS -->
+              <div class="loading-state">Carregando catálogo de modelos...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
+
+  <!-- AI Settings Modal -->
+  <div id="aiConfigModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>⚙️ Configurações de IA & Modelos</h3>
+        <button class="modal-close-btn" data-close-modal="aiConfigModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="aiOllamaEndpointInput">Endpoint do Ollama Local:</label>
+          <input type="text" id="aiOllamaEndpointInput" class="form-input" placeholder="http://127.0.0.1:11434">
+          <small class="form-hint">Onde seu daemon do Ollama está rodando localmente</small>
+        </div>
+        <div class="form-group">
+          <label for="aiOpenRouterKeyInput">Chave de API do OpenRouter (Opcional):</label>
+          <input type="password" id="aiOpenRouterKeyInput" class="form-input" placeholder="sk-or-v1-...">
+          <small class="form-hint">Necessário apenas se for usar modelos na nuvem como Claude 3.7 ou DeepSeek R1 Full</small>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="aiDryRunDefaultCheckbox" checked>
+            <span>Exigir confirmação prévia com simulação (Dry-Run) antes de qualquer exclusão</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal="aiConfigModal">Cancelar</button>
+        <button id="btnSaveAIConfig" class="btn btn-primary">Salvar Configurações</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Save Cache Modal -->
   <div id="saveCacheModal" class="modal-overlay hidden">
