@@ -81,6 +81,8 @@
     treemapDepthVal: document.getElementById('treemapDepthVal'),
     treeSearchInput: document.getElementById('treeSearchInput'),
     btnTreeRefresh: document.getElementById('btnTreeRefresh'),
+    btnTreeMaxHeight: document.getElementById('btnTreeMaxHeight'),
+    treeSplitter: document.getElementById('treeSplitter'),
     treeTableBody: document.getElementById('treeTableBody'),
     treemapCurrentTitle: document.getElementById('treemapCurrentTitle'),
     treemapCurrentSubtitle: document.getElementById('treemapCurrentSubtitle'),
@@ -1324,6 +1326,83 @@
         } catch (err) {
           showToast('Erro ao enviar para a lixeira: ' + err.message, 'danger');
         }
+      });
+    }
+
+    // Splitter Dragging Interaction
+    if (elements.treeSplitter && elements.treeSplitLayout) {
+      let isDragging = false;
+
+      // Restore saved split ratio
+      const savedRatio = localStorage.getItem('scanfile_split_left');
+      if (savedRatio) {
+        const left = parseFloat(savedRatio);
+        if (left >= 0.2 && left <= 0.8) {
+          elements.treeSplitLayout.style.setProperty('--tree-left-flex', left.toFixed(3));
+          elements.treeSplitLayout.style.setProperty('--tree-right-flex', (1 - left).toFixed(3));
+        }
+      }
+
+      elements.treeSplitter.addEventListener('pointerdown', (e) => {
+        isDragging = true;
+        elements.treeSplitter.classList.add('dragging');
+        elements.treeSplitter.setPointerCapture(e.pointerId);
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+      });
+
+      elements.treeSplitter.addEventListener('pointermove', (e) => {
+        if (!isDragging) return;
+        const rect = elements.treeSplitLayout.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const offsetX = e.clientX - rect.left;
+        let leftRatio = offsetX / rect.width;
+        leftRatio = Math.max(0.2, Math.min(0.8, leftRatio));
+        const rightRatio = 1 - leftRatio;
+
+        elements.treeSplitLayout.style.setProperty('--tree-left-flex', leftRatio.toFixed(3));
+        elements.treeSplitLayout.style.setProperty('--tree-right-flex', rightRatio.toFixed(3));
+        localStorage.setItem('scanfile_split_left', leftRatio.toFixed(3));
+        resizeTreemapCanvas();
+      });
+
+      const stopDrag = (e) => {
+        if (!isDragging) return;
+        isDragging = false;
+        elements.treeSplitter.classList.remove('dragging');
+        try { elements.treeSplitter.releasePointerCapture(e.pointerId); } catch (_) {}
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        resizeTreemapCanvas();
+      };
+
+      elements.treeSplitter.addEventListener('pointerup', stopDrag);
+      elements.treeSplitter.addEventListener('pointercancel', stopDrag);
+    }
+
+    // Max Height / Compact Fullscreen Toggle
+    if (elements.btnTreeMaxHeight) {
+      const updateMaxHeightBtn = (isMax) => {
+        elements.btnTreeMaxHeight.innerHTML = isMax ? '🗗 Restaurar Altura' : '⛶ Tela Máxima';
+        elements.btnTreeMaxHeight.title = isMax ? 'Restaurar layout padrão' : 'Expandir altura máxima na tela';
+        if (isMax) {
+          elements.btnTreeMaxHeight.classList.add('active');
+        } else {
+          elements.btnTreeMaxHeight.classList.remove('active');
+        }
+      };
+
+      const savedMaxHeight = localStorage.getItem('scanfile_max_height') === 'true';
+      if (savedMaxHeight) {
+        document.body.classList.add('ultra-height-mode');
+        updateMaxHeightBtn(true);
+      }
+
+      elements.btnTreeMaxHeight.addEventListener('click', () => {
+        const isMax = document.body.classList.toggle('ultra-height-mode');
+        localStorage.setItem('scanfile_max_height', isMax);
+        updateMaxHeightBtn(isMax);
+        setTimeout(() => resizeTreemapCanvas(), 60);
       });
     }
   }

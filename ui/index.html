@@ -318,13 +318,17 @@
               <input type="text" id="treeSearchInput" class="form-input form-input-sm" placeholder="Buscar na árvore...">
             </div>
 
+            <button id="btnTreeMaxHeight" class="btn btn-secondary btn-sm" title="Expandir Altura Máxima da Tela">
+              ⛶ Tela Máxima
+            </button>
+
             <button id="btnTreeRefresh" class="btn btn-secondary btn-sm" title="Atualizar dados">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
             </button>
           </div>
         </div>
 
-        <!-- Split Layout: Table (Left) + Treemap (Right) -->
+        <!-- Split Layout: Table (Left) + Resizer (Middle) + Treemap (Right) -->
         <div id="treeSplitLayout" class="tree-split-layout view-split">
           <!-- Left Pane: Hierarchy Table -->
           <div class="tree-left-pane">
@@ -350,6 +354,9 @@
               </table>
             </div>
           </div>
+
+          <!-- Interactive Draggable Splitter -->
+          <div class="tree-splitter" id="treeSplitter" title="Arraste para redimensionar largura entre Tabela e Gráfico"></div>
 
           <!-- Right Pane: Interactive Cushion Treemap -->
           <div class="tree-right-pane">

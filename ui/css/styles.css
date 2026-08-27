@@ -329,7 +329,10 @@ body {
 /* Main Layout - Full Width Responsive */
 .app-main {
   flex: 1;
-  padding: 1.25rem 1.75rem;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.85rem 1.5rem;
   max-width: 100%;
   width: 100%;
   margin: 0;
@@ -337,15 +340,22 @@ body {
 
 .tab-pane {
   display: none;
-  animation: fadeIn 0.3s ease;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .tab-pane.active {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  animation: fadeIn 0.2s ease;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -1030,46 +1040,121 @@ body {
   box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
 }
 
-/* Tree Split Layout */
+/* Tree Section Container - Full Height */
+.tree-section-container {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 1.25rem;
+  margin-bottom: 0;
+}
+
+.tree-controls-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+/* Tree Split Layout - Flexible Full Height */
 .tree-split-layout {
-  display: grid;
-  gap: 1rem;
-  min-height: 640px;
+  display: flex;
+  flex: 1;
+  min-height: 480px;
+  height: calc(100vh - 170px);
+  gap: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.tree-split-layout.view-split .tree-left-pane {
+  flex: var(--tree-left-flex, 0.95);
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.tree-split-layout.view-split .tree-splitter {
+  width: 12px;
+  cursor: col-resize;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  user-select: none;
+  z-index: 20;
+  transition: background 0.15s ease;
+  margin: 0 -2px;
+}
+
+.tree-split-layout.view-split .tree-splitter::after {
+  content: '';
+  width: 4px;
+  height: 48px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
   transition: all 0.2s ease;
 }
 
-.tree-split-layout.view-split {
-  grid-template-columns: 1fr 1.15fr;
+.tree-split-layout.view-split .tree-splitter:hover::after,
+.tree-split-layout.view-split .tree-splitter.dragging::after {
+  background: var(--accent-cyan);
+  height: 80px;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.8);
 }
 
-.tree-split-layout.view-table {
-  grid-template-columns: 1fr;
+.tree-split-layout.view-split .tree-right-pane {
+  flex: var(--tree-right-flex, 1.25);
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
+
+.tree-split-layout.view-table .tree-left-pane {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.tree-split-layout.view-table .tree-splitter,
 .tree-split-layout.view-table .tree-right-pane {
   display: none;
 }
 
-.tree-split-layout.view-treemap {
-  grid-template-columns: 1fr;
-}
-.tree-split-layout.view-treemap .tree-left-pane {
-  display: none;
-}
-
-.tree-left-pane, .tree-right-pane {
+.tree-split-layout.view-treemap .tree-right-pane {
+  flex: 1;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  height: 100%;
+  min-height: 0;
+}
+.tree-split-layout.view-treemap .tree-splitter,
+.tree-split-layout.view-treemap .tree-left-pane {
+  display: none;
 }
 
 .tree-table-wrapper {
   overflow-x: auto;
   overflow-y: auto;
-  max-height: 660px;
+  max-height: none;
+  height: 100%;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background: rgba(17, 24, 39, 0.6);
   flex: 1;
+  min-height: 0;
 }
 
 /* Treemap Right Pane */
@@ -1077,8 +1162,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.5rem;
-  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.4rem;
+  padding: 0.35rem 0.6rem;
   background: rgba(17, 24, 39, 0.5);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
@@ -1104,7 +1189,8 @@ body {
 .treemap-viewport-container {
   position: relative;
   flex: 1;
-  min-height: 520px;
+  min-height: 0;
+  height: 100%;
   background: #080c14;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
@@ -2053,6 +2139,94 @@ body {
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
+}
+
+/* ==========================================================================
+   Responsive Full-Height & Ultra-Height Mode
+   ========================================================================== */
+.duplicates-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  flex: 1;
+  min-height: 440px;
+  height: calc(100vh - 280px);
+  max-height: none;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.folder-dup-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  flex: 1;
+  min-height: 440px;
+  height: calc(100vh - 280px);
+  max-height: none;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.dormant-table-wrapper,
+.monitoring-table-wrapper {
+  flex: 1;
+  min-height: 440px;
+  height: calc(100vh - 280px);
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* Ultra Height Mode: maximized workspace space */
+body.ultra-height-mode .app-header {
+  padding: 0.4rem 1.25rem;
+}
+
+body.ultra-height-mode .brand-logo {
+  width: 32px;
+  height: 32px;
+}
+
+body.ultra-height-mode .brand-logo svg {
+  width: 18px;
+  height: 18px;
+}
+
+body.ultra-height-mode .brand-title h1 {
+  font-size: 1.05rem;
+}
+
+body.ultra-height-mode .brand-subtitle {
+  display: none;
+}
+
+body.ultra-height-mode .app-nav {
+  gap: 0.3rem;
+}
+
+body.ultra-height-mode .nav-tab {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+body.ultra-height-mode .app-main {
+  padding: 0.45rem 1rem;
+}
+
+body.ultra-height-mode .tree-section-container {
+  padding: 0.6rem 0.85rem;
+}
+
+body.ultra-height-mode .tree-split-layout {
+  height: calc(100vh - 125px);
+  min-height: 520px;
+}
+
+body.ultra-height-mode .duplicates-container,
+body.ultra-height-mode .folder-dup-container,
+body.ultra-height-mode .dormant-table-wrapper,
+body.ultra-height-mode .monitoring-table-wrapper {
+  height: calc(100vh - 215px);
 }
 
 
