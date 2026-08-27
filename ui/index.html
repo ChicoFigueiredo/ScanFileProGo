@@ -989,6 +989,37 @@
     </div>
   </div>
 
+  <!-- Global Operation Progress & Action Lock Overlay -->
+  <div id="globalProgressOverlay" class="global-progress-overlay hidden">
+    <div class="global-progress-card">
+      <div class="progress-card-top">
+        <div class="progress-spinner-ring">
+          <div class="spin-circle"></div>
+        </div>
+        <div class="progress-title-meta">
+          <h3 id="globalProgressTitle">Carregando Snapshot de Cache para a Memória...</h3>
+          <p id="globalProgressDesc">Descompactando arquivo Gzip (.scanfile.gz) e reconstruindo índices de hash...</p>
+        </div>
+      </div>
+
+      <!-- Main Progress Bar -->
+      <div class="progress-track-wrapper">
+        <div class="progress-bar-track">
+          <div id="globalProgressBar" class="progress-bar-fill animated-shimmer" style="width: 0%;"></div>
+        </div>
+        <div class="progress-metrics-row">
+          <span id="globalProgressPercent" class="progress-pct-badge">0%</span>
+          <span id="globalProgressDetail" class="progress-detail-info">Processando estrutura em background...</span>
+        </div>
+      </div>
+
+      <div class="progress-lock-banner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px; height:16px; flex-shrink:0;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        <span>Operação crítica em andamento — Controles bloqueados preventivamente para garantir integridade.</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Action Modal / Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 

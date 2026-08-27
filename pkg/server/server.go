@@ -588,11 +588,37 @@ func (s *AppServer) handleRestoreAutoSave(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tm, snapshot, err := scanner.LoadCacheFromFile(info.FilePath)
+	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+		st.Phase = "loading_cache"
+		st.CurrentPath = fmt.Sprintf("Carregando snapshot de autosave: %s", filepath.Base(info.FilePath))
+		st.ProgressPercent = 5
+	})
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+
+	tm, snapshot, err := scanner.LoadCacheFromFileWithProgress(info.FilePath, func(stage string, percent float64, details string) {
+		s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+			st.Phase = "loading_cache"
+			st.CurrentPath = fmt.Sprintf("%s - %s", stage, details)
+			st.ProgressPercent = percent
+		})
+		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	})
 	if err != nil {
+		s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+			st.Phase = "idle"
+			st.ProgressPercent = 0
+		})
+		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 		http.Error(w, "Erro ao carregar autosave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+		st.Phase = "loading_cache"
+		st.CurrentPath = "Reconstruindo índice de duplicatas por hash..."
+		st.ProgressPercent = 88
+	})
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 
 	s.Tree = tm
 	s.activeRoots = snapshot.Roots
@@ -601,6 +627,13 @@ func (s *AppServer) handleRestoreAutoSave(w http.ResponseWriter, r *http.Request
 	allFiles := s.Tree.GetAllFiles()
 	s.Index.RebuildIndex(allFiles)
 	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
+
+	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
+		st.Phase = "loading_cache"
+		st.CurrentPath = "Identificando e classificando pastas clones..."
+		st.ProgressPercent = 95
+	})
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 
 	s.FolderIndex.RebuildFolderIndex(s.Tree)
 	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
@@ -690,11 +723,37 @@ func (s *AppServer) handleLoadCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loadedTree, snapshot, err := scanner.LoadCacheFromFile(req.FilePath)
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = "loading_cache"
+		st.CurrentPath = fmt.Sprintf("Carregando snapshot de cache: %s", filepath.Base(req.FilePath))
+		st.ProgressPercent = 5
+	})
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+
+	loadedTree, snapshot, err := scanner.LoadCacheFromFileWithProgress(req.FilePath, func(stage string, percent float64, details string) {
+		s.Scanner.SetStatus(func(st *ScanStatus) {
+			st.Phase = "loading_cache"
+			st.CurrentPath = fmt.Sprintf("%s - %s", stage, details)
+			st.ProgressPercent = percent
+		})
+		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	})
 	if err != nil {
+		s.Scanner.SetStatus(func(st *ScanStatus) {
+			st.Phase = "idle"
+			st.ProgressPercent = 0
+		})
+		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 		http.Error(w, fmt.Sprintf("Erro ao carregar cache: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = "loading_cache"
+		st.CurrentPath = "Reconstruindo índice de arquivos duplicados por hash..."
+		st.ProgressPercent = 88
+	})
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 
 	// Replace active Tree
 	s.Tree = loadedTree
@@ -706,6 +765,13 @@ func (s *AppServer) handleLoadCache(w http.ResponseWriter, r *http.Request) {
 	allFiles := s.Tree.GetAllFiles()
 	s.Index.RebuildIndex(allFiles)
 	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
+
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = "loading_cache"
+		st.CurrentPath = "Identificando e classificando pastas clones..."
+		st.ProgressPercent = 95
+	})
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
 
 	// Rebuild Folder Duplicate Index
 	s.FolderIndex.RebuildFolderIndex(s.Tree)

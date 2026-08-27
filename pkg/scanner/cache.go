@@ -173,8 +173,20 @@ func SaveAutoSave(tm *TreeManager, roots []string, config ScanConfig, targetDir 
 	return latestPath, nil
 }
 
+// CacheProgressFunc callback reporting stage name, estimated percentage and detailed message.
+type CacheProgressFunc func(stage string, percent float64, details string)
+
 // ImportCache reads and reconstructs a TreeManager from a gzip-compressed (.sfz, .scanfile.gz) or plain JSON reader with retrocompatibility.
 func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
+	return ImportCacheWithProgress(r, nil)
+}
+
+// ImportCacheWithProgress reads and reconstructs a TreeManager while reporting stage progress.
+func ImportCacheWithProgress(r io.Reader, onProgress CacheProgressFunc) (*TreeManager, *CacheSnapshot, error) {
+	if onProgress != nil {
+		onProgress("Descompactando snapshot Gzip...", 15, "Lendo stream compactado do disco")
+	}
+
 	// Try reading as Gzip first
 	var reader io.Reader
 	gzReader, err := gzip.NewReader(r)
@@ -192,6 +204,10 @@ func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 		return nil, nil, fmt.Errorf("formato de arquivo de cache inválido ou corrompido: %w", err)
 	}
 
+	if onProgress != nil {
+		onProgress("Reconstruindo estrutura de diretórios...", 45, fmt.Sprintf("%d pastas e %d arquivos encontrados", len(snapshot.Directories), len(snapshot.Files)))
+	}
+
 	// Migrate version 1 to current version defaults
 	if snapshot.Version == 0 {
 		snapshot.Version = 1
@@ -207,6 +223,10 @@ func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 	// Recreate directory nodes
 	for _, dirPath := range snapshot.Directories {
 		tm.EnsureDirNode(dirPath)
+	}
+
+	if onProgress != nil {
+		onProgress("Mapeando arquivos em memória...", 65, "Vinculando nós de arquivos e metadados de hash")
 	}
 
 	// Insert files directly into their respective directory nodes
@@ -227,6 +247,10 @@ func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 		node.mu.Unlock()
 	}
 
+	if onProgress != nil {
+		onProgress("Calculando métricas agregadas da árvore...", 85, "Computando tamanhos e contadores recursivos")
+	}
+
 	// Recompute all aggregated sizes and file counts bottom-up
 	tm.ComputeAggregatedSizes()
 
@@ -235,13 +259,18 @@ func ImportCache(r io.Reader) (*TreeManager, *CacheSnapshot, error) {
 
 // LoadCacheFromFile loads a saved cache snapshot from a file path.
 func LoadCacheFromFile(filePath string) (*TreeManager, *CacheSnapshot, error) {
+	return LoadCacheFromFileWithProgress(filePath, nil)
+}
+
+// LoadCacheFromFileWithProgress loads a saved cache snapshot while reporting progress.
+func LoadCacheFromFileWithProgress(filePath string, onProgress CacheProgressFunc) (*TreeManager, *CacheSnapshot, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("falha ao abrir arquivo de cache: %w", err)
 	}
 	defer file.Close()
 
-	return ImportCache(file)
+	return ImportCacheWithProgress(file, onProgress)
 }
 
 // BuildQuickScanLookup builds a fast index map from a CacheSnapshot to allow O(1) hash and metadata reuse during Quick Scan.

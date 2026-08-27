@@ -233,6 +233,13 @@
     ollamaStatusDot: document.getElementById('ollamaStatusDot'),
     openrouterStatusDot: document.getElementById('openrouterStatusDot'),
     directStatusDot: document.getElementById('directStatusDot'),
+    // Global operation progress overlay
+    globalProgressOverlay: document.getElementById('globalProgressOverlay'),
+    globalProgressTitle: document.getElementById('globalProgressTitle'),
+    globalProgressDesc: document.getElementById('globalProgressDesc'),
+    globalProgressBar: document.getElementById('globalProgressBar'),
+    globalProgressPercent: document.getElementById('globalProgressPercent'),
+    globalProgressDetail: document.getElementById('globalProgressDetail'),
   };
 
   // Helper: Format Bytes (e.g. 1024 -> 1.00 KB)
@@ -248,7 +255,58 @@
 
   // Helper: Format Numbers with commas
   function formatNumber(num) {
-    return new Intl.NumberFormat('pt-BR').format(num || 0);
+    if (num === null || num === undefined) return '0';
+    return Number(num).toLocaleString('pt-BR');
+  }
+
+  // Set Global Operation Lock & Progress State
+  function setGlobalOperationLock(isLocked, title = '', desc = '', percent = 0, detail = '') {
+    state.isBusyOperation = isLocked;
+
+    // Prevent duplicate triggers by disabling action buttons
+    const actionButtons = [
+      elements.btnStartScan,
+      elements.btnQuickScan,
+      elements.btnOpenSaveCacheModal,
+      elements.btnOpenLoadCacheModal,
+      elements.btnBannerRestore,
+      elements.btnBannerQuickScan,
+      elements.btnBannerDismiss,
+      elements.btnRefreshDrives,
+      elements.btnSelectAllDrives,
+      elements.btnConfirmSaveCache,
+      elements.btnLoadCustomCache,
+    ];
+
+    actionButtons.forEach(btn => {
+      if (btn) {
+        btn.disabled = isLocked;
+        if (isLocked) {
+          btn.classList.add('disabled-action');
+        } else {
+          btn.classList.remove('disabled-action');
+        }
+      }
+    });
+
+    // Toggle overlay
+    if (elements.globalProgressOverlay) {
+      if (isLocked) {
+        elements.globalProgressOverlay.classList.remove('hidden');
+        if (title && elements.globalProgressTitle) elements.globalProgressTitle.textContent = title;
+        if (desc && elements.globalProgressDesc) elements.globalProgressDesc.textContent = desc;
+        updateGlobalProgress(percent, detail);
+      } else {
+        elements.globalProgressOverlay.classList.add('hidden');
+      }
+    }
+  }
+
+  function updateGlobalProgress(percent = 0, detail = '') {
+    const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+    if (elements.globalProgressBar) elements.globalProgressBar.style.width = `${clamped}%`;
+    if (elements.globalProgressPercent) elements.globalProgressPercent.textContent = `${clamped}%`;
+    if (detail && elements.globalProgressDetail) elements.globalProgressDetail.textContent = detail;
   }
 
   // Helper: Format Date
@@ -884,12 +942,21 @@
   // Restore latest AutoSave snapshot
   async function restoreAutoSave() {
     try {
+      setGlobalOperationLock(
+        true, 
+        'Restaurando Snapshot de AutoSave...', 
+        'Descompactando arquivo de autosave e reconstruindo árvore de diretórios em memória...', 
+        10, 
+        'Iniciando leitura do arquivo compactado .sfz...'
+      );
+
       showToast('Carregando autosave do disco...', 'info');
       const res = await fetch('/api/cache/autosave/restore', { method: 'POST' });
       if (!res.ok) throw new Error(await res.text());
       const result = await res.json();
       const snap = result.snapshot;
 
+      updateGlobalProgress(100, 'Snapshot restaurado com sucesso!');
       if (elements.autoSaveBanner) elements.autoSaveBanner.classList.add('hidden');
       showToast(`Autosave restaurado com sucesso! ${formatNumber(snap.totalFiles)} arquivos carregados.`, 'success');
 
@@ -906,13 +973,15 @@
       }
 
       loadTreeData('');
-      loadDuplicates();
-      loadFolderDuplicates();
+      loadDuplicates(true);
+      loadFolderDuplicates(true);
       loadAnalytics();
       return snap;
     } catch (err) {
       showToast('Erro ao restaurar autosave: ' + err.message, 'danger');
       throw err;
+    } finally {
+      setTimeout(() => setGlobalOperationLock(false), 350);
     }
   }
 
@@ -1010,7 +1079,15 @@
       elements.hudErrorsBadge.classList.add('hidden');
     }
 
-    if (st.phase === 'phase1_metadata') {
+    if (st.phase === 'loading_cache') {
+      setGlobalOperationLock(
+        true,
+        'Carregando Snapshot de Cache para a Memória...',
+        st.currentPath || 'Processando estrutura de cache...',
+        st.progressPercent || 0,
+        st.currentPath || ''
+      );
+    } else if (st.phase === 'phase1_metadata') {
       elements.hudPhaseBadge.textContent = st.isQuickScan ? 'Fase 1: Mapeamento e Verificação Incremental' : 'Fase 1: Mapeamento de Metadados em Memória';
       elements.hudPhaseBadge.style.background = 'rgba(56, 189, 248, 0.15)';
       elements.hudPhaseBadge.style.color = '#38bdf8';
@@ -1030,6 +1107,7 @@
       elements.liveBadge.className = 'status-badge scanning';
       elements.liveStatusText.textContent = 'Fase 2: Hashes...';
     } else if (st.phase === 'completed' || st.phase === 'watching') {
+      setGlobalOperationLock(false);
       elements.hudPhaseBadge.textContent = st.isWatching ? 'Sistema Conectado: Monitoramento em Tempo Real Ativo' : 'Varredura Concluída';
       elements.hudPhaseBadge.style.background = 'rgba(16, 185, 129, 0.15)';
       elements.hudPhaseBadge.style.color = '#10b981';
@@ -2507,6 +2585,14 @@
   // Execute loading of cache file
   async function loadCacheFile(filePath) {
     try {
+      setGlobalOperationLock(
+        true, 
+        'Carregando Snapshot de Cache para a Memória...', 
+        `Descompactando ${filePath} e reconstruindo árvore de arquivos e índices...`, 
+        10, 
+        'Lendo arquivo do disco...'
+      );
+
       showToast(`Carregando cache de ${filePath}...`, 'info');
       const res = await fetch('/api/cache/load', {
         method: 'POST',
@@ -2518,6 +2604,7 @@
       const data = await res.json();
 
       elements.loadCacheModal.classList.add('hidden');
+      updateGlobalProgress(100, 'Snapshot carregado com sucesso!');
       showToast(`Cache carregado! ${formatNumber(data.snapshot.totalFiles)} arquivos (${formatBytes(data.snapshot.totalBytes)}) restaurados em memória.`, 'success');
 
       // Update UI displays
@@ -2527,11 +2614,14 @@
       elements.currentPathText.textContent = `Snapshot carregado: ${data.snapshot.fileName || filePath}`;
 
       // Refresh other tabs
-      loadDuplicates();
-      loadFolderDuplicates();
-      loadTreeData();
+      loadDuplicates(true);
+      loadFolderDuplicates(true);
+      loadTreeData('');
+      loadAnalytics();
     } catch (err) {
       showToast(`Erro ao carregar cache: ${err.message}`, 'danger');
+    } finally {
+      setTimeout(() => setGlobalOperationLock(false), 350);
     }
   }
 
