@@ -368,13 +368,25 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		LinkTarget:          node.LinkTarget,
 	}
 
-	// CRITICAL PERFORMANCE & MEMORY PROTECTION:
-	// Only copy direct files for the current folder being navigated (depth == 1).
-	// Subdirectories at depth > 1 are represented by their aggregated TotalSize and SubDirs.
-	// This prevents serializing 40+ million FileNode objects into multi-gigabyte JSONs that crash browser memory!
+	// Preserve files for treemap and table visualization:
+	// For the current folder (depth 1), include all direct files.
+	// For subfolders (depth > 1), include the top largest files (up to 150 per folder)
+	// so huge files (e.g. disk.vhdx, ISOs, ZIPs, virtual disks) are rendered in the Treemap
+	// while keeping payload light and protecting memory.
 	if currentDepth == 1 {
 		summary.Files = make([]*FileNode, len(node.Files))
 		copy(summary.Files, node.Files)
+	} else if len(node.Files) > 0 {
+		sortedFiles := make([]*FileNode, len(node.Files))
+		copy(sortedFiles, node.Files)
+		sort.Slice(sortedFiles, func(i, j int) bool {
+			return sortedFiles[i].Size > sortedFiles[j].Size
+		})
+		maxFilesPerDir := 150
+		if len(sortedFiles) > maxFilesPerDir {
+			sortedFiles = sortedFiles[:maxFilesPerDir]
+		}
+		summary.Files = sortedFiles
 	} else {
 		summary.Files = []*FileNode{}
 	}

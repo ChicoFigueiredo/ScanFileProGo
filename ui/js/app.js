@@ -1252,6 +1252,106 @@
     '#a855f7', // Level 8+ - Purple
   ];
 
+  // Authentic WinDirStat Extension Color Palette (Faithful to KDirStat / WinDirStat)
+  const WINDIRSTAT_EXT_COLORS = {
+    // Virtual Disks & Images (WinDirStat Signature Royal Blue / Deep Indigo)
+    vhdx: '#2563eb',
+    vhd: '#1d4ed8',
+    vmdk: '#1e40af',
+    vdi: '#3b82f6',
+    img: '#2563eb',
+    iso: '#b45309',
+
+    // Archives (WinDirStat Warm Amber / Golden Orange / Yellow)
+    zip: '#d97706',
+    rar: '#f59e0b',
+    '7z': '#b45309',
+    tar: '#d97706',
+    gz: '#f59e0b',
+    bz2: '#b45309',
+    cab: '#ca8a04',
+    wim: '#d97706',
+
+    // System & Drivers (WinDirStat Teal / Cyan / Emerald)
+    dll: '#06b6d4',
+    sys: '#10b981',
+    drv: '#0d9488',
+    ocx: '#14b8a6',
+    cpl: '#059669',
+
+    // Game Assets & Packages (WinDirStat Magenta / Vibrant Purple)
+    psarc: '#a855f7',
+    pak: '#9333ea',
+    bundle: '#c084fc',
+    bin: '#7e22ce',
+    dat: '#6b21a8',
+    rpf: '#a855f7',
+
+    // Executables (WinDirStat Cobalt / Azure)
+    exe: '#3b82f6',
+    msi: '#2563eb',
+    bat: '#0284c7',
+    cmd: '#0369a1',
+    ps1: '#0284c7',
+
+    // Images (WinDirStat Ruby Red / Crimson)
+    jpg: '#ef4444',
+    jpeg: '#dc2626',
+    png: '#f43f5e',
+    webp: '#e11d48',
+    gif: '#fb7185',
+    bmp: '#b91c1c',
+    tiff: '#be123c',
+    psd: '#e11d48',
+    raw: '#be123c',
+
+    // Videos (WinDirStat Violet / Purple)
+    mp4: '#8b5cf6',
+    mkv: '#7c3aed',
+    avi: '#6d28d9',
+    mov: '#a78bfa',
+    wmv: '#5b21b6',
+
+    // Audio (WinDirStat Lime / Olive)
+    mp3: '#84cc16',
+    flac: '#65a30d',
+    wav: '#4d7c0f',
+    m4a: '#a3e635',
+
+    // Documents (WinDirStat Red/Sky/Green)
+    pdf: '#dc2626',
+    docx: '#0284c7',
+    doc: '#0369a1',
+    xlsx: '#16a34a',
+    xls: '#15803d',
+    pptx: '#ea580c',
+    txt: '#64748b',
+
+    // Code & Databases (WinDirStat Gold / Cyan)
+    sqlite: '#0ea5e9',
+    db: '#0284c7',
+    sql: '#0369a1',
+    js: '#eab308',
+    ts: '#3b82f6',
+    go: '#06b6d4',
+    py: '#3b82f6',
+  };
+
+  function getExtensionColor(ext) {
+    if (!ext) return '#64748b';
+    const cleanExt = ext.replace(/^\./, '').toLowerCase();
+    if (WINDIRSTAT_EXT_COLORS[cleanExt]) {
+      return WINDIRSTAT_EXT_COLORS[cleanExt];
+    }
+    // High-contrast deterministic HSL color generator
+    let hash = 0;
+    for (let i = 0; i < cleanExt.length; i++) {
+      hash = cleanExt.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const h = Math.abs(hash) % 360;
+    return `hsl(${h}, 72%, 50%)`;
+  }
+
   function getNodeColor(node, colorMode, level) {
     if (colorMode === 'depth') {
       return LEVEL_COLORS[level % LEVEL_COLORS.length];
@@ -1266,13 +1366,12 @@
       if (ageDays < 1825) return '#f97316'; // 2-5y: orange
       return '#ef4444'; // >5y: red
     } else {
-      // Extension / Type mode
-      if (!node.isFile) {
-        return LEVEL_COLORS[level % LEVEL_COLORS.length];
+      // Extension Mode (WinDirStat 1:1 Fidelity)
+      if (node.isFile) {
+        const ext = (node.name || '').split('.').pop().toLowerCase();
+        return getExtensionColor(ext);
       }
-      const ext = (node.name || '').split('.').pop().toLowerCase();
-      const type = EXT_MAP[ext] || 'other';
-      return FILE_TYPE_COLORS[type] || FILE_TYPE_COLORS.other;
+      return LEVEL_COLORS[level % LEVEL_COLORS.length];
     }
   }
 
@@ -1807,15 +1906,14 @@
     if (width <= 0 || height <= 0 || !container) return [];
     const results = [];
 
-    const isRoot = level === 0;
-
-    // Collect children
+    // Collect children: subdirectories and files
     let children = [];
     if (container.subDirs && container.subDirs.length > 0) {
       children.push(...container.subDirs.map(d => ({
         name: d.name,
         path: d.path,
         totalSize: d.totalSize || 0,
+        totalAllocatedSize: d.totalAllocatedSize || d.totalSize || 0,
         fileCount: d.fileCount || 0,
         subDirCount: d.subDirCount || 0,
         modTime: d.modTime,
@@ -1830,6 +1928,7 @@
         name: f.name,
         path: f.path,
         totalSize: f.size || 0,
+        totalAllocatedSize: f.allocatedSize || f.size || 0,
         fileCount: 1,
         subDirCount: 0,
         modTime: f.modTime,
@@ -1854,31 +1953,15 @@
       return results;
     }
 
-    // Header margin if directory has children
-    const headerHeight = (width > 90 && height > 70 && !isRoot) ? 18 : 0;
-    const padding = 2;
-
-    if (!isRoot) {
-      results.push({
-        x, y, w: width, h: height,
-        node: container,
-        level,
-        isLeaf: false,
-        headerHeight,
-      });
-    }
-
-    const availX = x + padding;
-    const availY = y + headerHeight + padding;
-    const availW = width - (padding * 2);
-    const availH = height - headerHeight - (padding * 2);
-
-    if (availW < 3 || availH < 3) return results;
-
-    const rects = squarify(children, totalChildSize, availX, availY, availW, availH);
+    // Squarify all children into the rectangle [x, y, width, height]
+    const rects = squarify(children, totalChildSize, x, y, width, height);
 
     rects.forEach(item => {
-      if (item.node.isFile || level + 1 >= maxDepth) {
+      const hasSubChildren = (item.node.subDirs && item.node.subDirs.length > 0) || 
+                             (item.node.files && item.node.files.length > 0);
+      const isLeafChild = item.node.isFile || level + 1 >= maxDepth || !hasSubChildren;
+
+      if (isLeafChild) {
         results.push({
           x: item.x,
           y: item.y,
@@ -1889,6 +1972,7 @@
           isLeaf: true,
         });
       } else {
+        // Recurse into subdirectory
         const subResults = computeSquarifiedLayout(item.node, item.x, item.y, item.w, item.h, level + 1, maxDepth);
         results.push(...subResults);
       }
@@ -1897,25 +1981,31 @@
     return results;
   }
 
+  // Exact Mathematical Squarified Treemap (100% Canvas Area Filling, Zero Shrinking)
   function squarify(children, totalSize, x, y, width, height) {
+    if (children.length === 0 || width <= 0 || height <= 0 || totalSize <= 0) return [];
+
     const rects = [];
     let remaining = [...children];
-    let curX = x;
-    let curY = y;
-    let curW = width;
-    let curH = height;
+    let remSize = totalSize;
+    let rx = x;
+    let ry = y;
+    let rw = width;
+    let rh = height;
 
     while (remaining.length > 0) {
-      const isHorizontal = curW >= curH;
-      const side = isHorizontal ? curH : curW;
+      if (rw <= 0 || rh <= 0 || remSize <= 0) break;
+
+      const isHorizontal = rw >= rh;
+      const side = isHorizontal ? rh : rw;
 
       let row = [remaining[0]];
-      let bestWorst = worstRatio(row, side, totalSize, isHorizontal ? curW : curH);
+      let bestWorst = worstAspect(row, side, remSize, isHorizontal ? rw : rh);
       let i = 1;
 
       while (i < remaining.length) {
         const testRow = [...row, remaining[i]];
-        const testWorst = worstRatio(testRow, side, totalSize, isHorizontal ? curW : curH);
+        const testWorst = worstAspect(testRow, side, remSize, isHorizontal ? rw : rh);
         if (testWorst <= bestWorst) {
           bestWorst = testWorst;
           row = testRow;
@@ -1926,25 +2016,26 @@
       }
 
       const rowSum = row.reduce((acc, c) => acc + c.totalSize, 0);
-      const rowThickness = totalSize > 0 ? (rowSum / totalSize) * (isHorizontal ? curW : curH) : 0;
+      // Strip thickness along the perpendicular dimension
+      const stripThickness = remSize > 0 ? (rowSum / remSize) * (isHorizontal ? rw : rh) : 0;
 
       let offset = 0;
       for (const item of row) {
         const itemLen = rowSum > 0 ? (item.totalSize / rowSum) * side : 0;
         if (isHorizontal) {
           rects.push({
-            x: curX,
-            y: curY + offset,
-            w: Math.max(0, rowThickness),
-            h: Math.max(0, itemLen),
+            x: rx,
+            y: ry + offset,
+            w: stripThickness,
+            h: itemLen,
             node: item,
           });
         } else {
           rects.push({
-            x: curX + offset,
-            y: curY,
-            w: Math.max(0, itemLen),
-            h: Math.max(0, rowThickness),
+            x: rx + offset,
+            y: ry,
+            w: itemLen,
+            h: stripThickness,
             node: item,
           });
         }
@@ -1952,20 +2043,21 @@
       }
 
       if (isHorizontal) {
-        curX += rowThickness;
-        curW -= rowThickness;
+        rx += stripThickness;
+        rw -= stripThickness;
       } else {
-        curY += rowThickness;
-        curH -= rowThickness;
+        ry += stripThickness;
+        rh -= stripThickness;
       }
 
+      remSize -= rowSum;
       remaining = remaining.slice(row.length);
     }
 
     return rects;
   }
 
-  function worstRatio(row, side, totalSize, totalLength) {
+  function worstAspect(row, side, totalSize, totalLength) {
     if (row.length === 0 || side <= 0 || totalSize <= 0 || totalLength <= 0) return Infinity;
     const rowSum = row.reduce((acc, c) => acc + c.totalSize, 0);
     const rowThickness = (rowSum / totalSize) * totalLength;
@@ -1981,7 +2073,7 @@
     return maxRatio;
   }
 
-  // Render Treemap on Canvas with Cushion Shading
+  // Render Treemap on Canvas with Authentic WinDirStat Cushion Shading
   function renderTreemapCanvas() {
     if (!elements.treemapCanvas) return;
     const ctx = elements.treemapCanvas.getContext('2d');
@@ -2001,34 +2093,9 @@
     }
 
     const colorMode = state.treemap.colorMode || 'extension';
-
-    // Draw nodes: First containers/parents, then leaves
-    const nonLeaves = state.treemap.layoutNodes.filter(n => !n.isLeaf);
     const leaves = state.treemap.layoutNodes.filter(n => n.isLeaf);
 
-    // Draw container header titles
-    nonLeaves.forEach(n => {
-      if (n.headerHeight && n.headerHeight > 0) {
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
-        ctx.fillRect(n.x, n.y, n.w, n.headerHeight);
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(n.x, n.y, n.w, n.headerHeight);
-
-        if (n.w > 60) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(n.x + 2, n.y, n.w - 4, n.headerHeight);
-          ctx.clip();
-          ctx.fillStyle = '#94a3b8';
-          ctx.font = '600 10px Inter, sans-serif';
-          ctx.fillText(`📁 ${n.node.name} (${formatBytes(n.node.totalSize)})`, n.x + 4, n.y + 12);
-          ctx.restore();
-        }
-      }
-    });
-
-    // Draw leaf cushions
+    // Draw leaf cushions (True WinDirStat 3D Specular Pillows)
     leaves.forEach(n => {
       const isHovered = state.treemap.hoveredNode && state.treemap.hoveredNode.node.path === n.node.path;
       const isSelected = state.treemap.selectedNode && state.treemap.selectedNode.node.path === n.node.path;
@@ -2041,42 +2108,62 @@
     });
   }
 
-  // Draw Cushion Shading & Gradient Borders
+  // Draw Authentic WinDirStat 3D Glossy Cushion Shading
   function drawCushionRect(ctx, x, y, w, h, baseColor, isHovered, isSelected, label, sublabel, isLeaf, level) {
     if (w <= 0 || h <= 0) return;
 
-    // Fill Base Color
+    // 1. Base Solid Color Fill
     ctx.fillStyle = baseColor;
     ctx.fillRect(x, y, w, h);
 
-    // Cushion Surface Gradient
-    const grad = ctx.createLinearGradient(x, y, x + w, y + h);
-    grad.addColorStop(0, 'rgba(255, 255, 255, 0.22)');
-    grad.addColorStop(0.4, 'rgba(255, 255, 255, 0.03)');
-    grad.addColorStop(1, 'rgba(0, 0, 0, 0.45)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, y, w, h);
+    // 2. WinDirStat Specular Cushion Highlight (Spherical / Diagonal Gloss Lighting)
+    if (w >= 3 && h >= 3) {
+      // Off-center specular highlight point towards top-left
+      const cx = x + w * 0.35;
+      const cy = y + h * 0.35;
+      const radius = Math.max(w, h) * 0.9;
 
-    // Border
+      const radialGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      radialGrad.addColorStop(0, 'rgba(255, 255, 255, 0.45)');  // Glossy reflection bulb
+      radialGrad.addColorStop(0.35, 'rgba(255, 255, 255, 0.10)');
+      radialGrad.addColorStop(0.7, 'rgba(0, 0, 0, 0.25)');
+      radialGrad.addColorStop(1, 'rgba(0, 0, 0, 0.65)');       // Soft edge shadow
+
+      ctx.fillStyle = radialGrad;
+      ctx.fillRect(x, y, w, h);
+
+      // Inner Light Bevel (Top & Left edge highlight)
+      if (w > 6 && h > 6) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.32)';
+        ctx.fillRect(x, y, w, 1);
+        ctx.fillRect(x, y, 1, h);
+
+        // Inner Shadow Bevel (Bottom & Right edge shadow)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(x, y + h - 1, w, 1);
+        ctx.fillRect(x + w - 1, y, 1, h);
+      }
+    }
+
+    // 3. Outer Border / Pillow Seam
     if (isSelected) {
       ctx.strokeStyle = '#f59e0b';
       ctx.lineWidth = 2.5;
+      ctx.strokeRect(x, y, w, h);
     } else if (isHovered) {
       ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 2;
-    } else {
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-      ctx.lineWidth = 1;
-    }
-    ctx.strokeRect(x, y, w, h);
-
-    if (isHovered) {
+      ctx.strokeRect(x, y, w, h);
       ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
       ctx.fillRect(x, y, w, h);
+    } else {
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, w, h);
     }
 
-    // Text Label (clipped inside rectangle)
-    if (w > 40 && h > 18 && label) {
+    // 4. Text Label (Clipped cleanly inside block)
+    if (w > 55 && h > 20 && label) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(x + 2, y + 2, Math.max(0, w - 4), Math.max(0, h - 4));
@@ -2084,14 +2171,15 @@
 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 11px Inter, sans-serif';
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
       ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
       ctx.fillText(label, x + 4, y + 13);
 
-      if (h > 32 && sublabel) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      if (h > 34 && sublabel) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
         ctx.font = '10px "JetBrains Mono", monospace';
-        ctx.shadowBlur = 3;
         ctx.fillText(sublabel, x + 4, y + 26);
       }
 
@@ -2099,7 +2187,7 @@
     }
   }
 
-  // Render Treemap Legend Bar (Chips at bottom of chart)
+  // Render Treemap Legend Bar (Dynamic File Extension Stats - WinDirStat Style)
   function renderTreemapLegend() {
     if (!elements.treemapLegendBar) return;
     const colorMode = state.treemap.colorMode || 'extension';
@@ -2127,24 +2215,71 @@
         </div>
       `).join('');
     } else {
-      // Extension
-      const types = [
-        { color: FILE_TYPE_COLORS.video, label: '🎬 Vídeos' },
-        { color: FILE_TYPE_COLORS.image, label: '🖼️ Imagens' },
-        { color: FILE_TYPE_COLORS.audio, label: '🎵 Áudio' },
-        { color: FILE_TYPE_COLORS.archive, label: '📦 Compactados' },
-        { color: FILE_TYPE_COLORS.executable, label: '⚙️ Executáveis' },
-        { color: FILE_TYPE_COLORS.document, label: '📄 Documentos' },
-        { color: FILE_TYPE_COLORS.code, label: '💻 Código / DB' },
-        { color: FILE_TYPE_COLORS.folder, label: '📁 Pastas' },
-        { color: FILE_TYPE_COLORS.other, label: '📦 Outros' },
-      ];
-      elements.treemapLegendBar.innerHTML = types.map(t => `
-        <div class="legend-chip">
-          <span class="legend-color-dot" style="background:${t.color}"></span>
-          <span>${t.label}</span>
-        </div>
-      `).join('');
+      // Dynamic Extension Stats from Current Tree
+      const extStats = {};
+      let totalTreeBytes = 0;
+
+      function collectExt(node) {
+        if (!node) return;
+        if (node.files && Array.isArray(node.files)) {
+          for (const f of node.files) {
+            const sz = f.size || f.totalSize || 0;
+            if (sz <= 0) continue;
+            totalTreeBytes += sz;
+            const ext = (f.name || '').split('.').pop().toLowerCase();
+            if (!extStats[ext]) {
+              extStats[ext] = { ext, totalBytes: 0, count: 0, color: getExtensionColor(ext) };
+            }
+            extStats[ext].totalBytes += sz;
+            extStats[ext].count++;
+          }
+        }
+        if (node.subDirs && Array.isArray(node.subDirs)) {
+          for (const d of node.subDirs) {
+            collectExt(d);
+          }
+        }
+      }
+
+      if (Array.isArray(state.treemap.rawTree)) {
+        state.treemap.rawTree.forEach(collectExt);
+      } else if (state.treemap.rawTree) {
+        collectExt(state.treemap.rawTree);
+      }
+
+      const sortedExts = Object.values(extStats).sort((a, b) => b.totalBytes - a.totalBytes);
+
+      if (sortedExts.length > 0) {
+        const topExts = sortedExts.slice(0, 10);
+        elements.treemapLegendBar.innerHTML = topExts.map(t => {
+          const pct = totalTreeBytes > 0 ? ((t.totalBytes / totalTreeBytes) * 100).toFixed(1) : '0.0';
+          return `
+            <div class="legend-chip" title="${formatNumber(t.count)} arquivos .${t.ext}">
+              <span class="legend-color-dot" style="background:${t.color}"></span>
+              <strong>.${t.ext}</strong>
+              <span style="opacity:0.85;">${formatBytes(t.totalBytes)} (${pct}%)</span>
+            </div>
+          `;
+        }).join('');
+      } else {
+        // Common WinDirStat file extensions
+        const defaultExts = [
+          { ext: 'vhdx', color: getExtensionColor('vhdx'), label: '.vhdx' },
+          { ext: 'zip', color: getExtensionColor('zip'), label: '.zip / .rar' },
+          { ext: 'sys', color: getExtensionColor('sys'), label: '.sys / .dll' },
+          { ext: 'exe', color: getExtensionColor('exe'), label: '.exe / .msi' },
+          { ext: 'psarc', color: getExtensionColor('psarc'), label: '.psarc / .pak' },
+          { ext: 'jpg', color: getExtensionColor('jpg'), label: '.jpg / .png' },
+          { ext: 'mp4', color: getExtensionColor('mp4'), label: '.mp4 / .mkv' },
+          { ext: 'iso', color: getExtensionColor('iso'), label: '.iso / .img' },
+        ];
+        elements.treemapLegendBar.innerHTML = defaultExts.map(t => `
+          <div class="legend-chip">
+            <span class="legend-color-dot" style="background:${t.color}"></span>
+            <span>${t.label}</span>
+          </div>
+        `).join('');
+      }
     }
   }
 

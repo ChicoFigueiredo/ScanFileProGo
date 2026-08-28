@@ -7,7 +7,7 @@
   "hashMode": "all",
   "minFileSize": 10485760,
   "autoSaveIntervalMinutes": 5,
-  "treemapDepth": 5,
+  "treemapDepth": 10,
   "treemapColorMode": "extension",
   "treemapViewMode": "split",
   "duplicatesSortBy": "size_desc",
