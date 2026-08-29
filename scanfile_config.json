@@ -15,7 +15,7 @@
   "idleMinAgeDays": 365,
   "idleMinSizeBytes": 104857600,
   "folderSortBy": "wasted_desc",
-  "folderMinSize": 0,
+  "folderMinSize": 104857600,
   "uiZoom": 95,
   "aiProvider": "",
   "aiOllamaEndpoint": "",

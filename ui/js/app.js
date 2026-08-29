@@ -1467,23 +1467,29 @@
       items = state.treeData;
       parentSize = items.reduce((acc, cur) => acc + (cur.totalSize || 0), 0) || 1;
     } else {
-      parentSize = state.treeData.totalSize || 1;
-      if (state.treeData.subDirs) items.push(...state.treeData.subDirs);
-      if (state.treeData.files) {
-        items.push(...state.treeData.files.map(f => ({
-          path: f.path,
-          name: f.name,
-          totalSize: f.size,
-          totalAllocatedSize: f.allocatedSize || f.size,
-          isCompressed: f.isCompressed,
-          fileCount: 1,
-          subDirCount: 0,
-          createTime: f.createTime,
-          modTime: f.modTime,
-          isFile: true,
-          isSymlink: f.isSymlink,
-          linkTarget: f.linkTarget,
-        })));
+      if (state.treeData.subDirs && Array.isArray(state.treeData.subDirs)) {
+        for (let i = 0; i < state.treeData.subDirs.length; i++) {
+          items.push(state.treeData.subDirs[i]);
+        }
+      }
+      if (state.treeData.files && Array.isArray(state.treeData.files)) {
+        for (let i = 0; i < state.treeData.files.length; i++) {
+          const f = state.treeData.files[i];
+          items.push({
+            path: f.path,
+            name: f.name,
+            totalSize: f.size,
+            totalAllocatedSize: f.allocatedSize || f.size,
+            isCompressed: f.isCompressed,
+            fileCount: 1,
+            subDirCount: 0,
+            createTime: f.createTime,
+            modTime: f.modTime,
+            isFile: true,
+            isSymlink: f.isSymlink,
+            linkTarget: f.linkTarget,
+          });
+        }
       }
     }
 
@@ -1901,46 +1907,53 @@
     renderTreemapCanvas();
   }
 
-  // Squarified Treemap Layout Computation (Bruls, Huizing, van Wijk algorithm)
-  function computeSquarifiedLayout(container, x, y, width, height, level, maxDepth) {
-    if (width <= 0 || height <= 0 || !container) return [];
-    const results = [];
+  // Squarified Treemap Layout Computation (Bruls, Huizing, van Wijk algorithm) - Stack-Safe
+  function computeSquarifiedLayout(container, x, y, width, height, level, maxDepth, results = []) {
+    if (width <= 0 || height <= 0 || !container) return results;
 
-    // Collect children: subdirectories and files
-    let children = [];
-    if (container.subDirs && container.subDirs.length > 0) {
-      children.push(...container.subDirs.map(d => ({
-        name: d.name,
-        path: d.path,
-        totalSize: d.totalSize || 0,
-        totalAllocatedSize: d.totalAllocatedSize || d.totalSize || 0,
-        fileCount: d.fileCount || 0,
-        subDirCount: d.subDirCount || 0,
-        modTime: d.modTime,
-        createTime: d.createTime,
-        isFile: false,
-        subDirs: d.subDirs,
-        files: d.files,
-      })));
+    // Collect children: subdirectories and files safely without array spreads
+    const children = [];
+    if (container.subDirs && Array.isArray(container.subDirs)) {
+      for (let i = 0; i < container.subDirs.length; i++) {
+        const d = container.subDirs[i];
+        if (d && (d.totalSize || 0) > 0) {
+          children.push({
+            name: d.name,
+            path: d.path,
+            totalSize: d.totalSize || 0,
+            totalAllocatedSize: d.totalAllocatedSize || d.totalSize || 0,
+            fileCount: d.fileCount || 0,
+            subDirCount: d.subDirCount || 0,
+            modTime: d.modTime,
+            createTime: d.createTime,
+            isFile: false,
+            subDirs: d.subDirs,
+            files: d.files,
+          });
+        }
+      }
     }
-    if (container.files && container.files.length > 0) {
-      children.push(...container.files.map(f => ({
-        name: f.name,
-        path: f.path,
-        totalSize: f.size || 0,
-        totalAllocatedSize: f.allocatedSize || f.size || 0,
-        fileCount: 1,
-        subDirCount: 0,
-        modTime: f.modTime,
-        createTime: f.createTime,
-        isFile: true,
-      })));
+    if (container.files && Array.isArray(container.files)) {
+      for (let i = 0; i < container.files.length; i++) {
+        const f = container.files[i];
+        const sz = f ? (f.size || f.totalSize || 0) : 0;
+        if (sz > 0) {
+          children.push({
+            name: f.name,
+            path: f.path,
+            totalSize: sz,
+            totalAllocatedSize: f.allocatedSize || sz,
+            fileCount: 1,
+            subDirCount: 0,
+            modTime: f.modTime,
+            createTime: f.createTime,
+            isFile: true,
+          });
+        }
+      }
     }
 
-    // Filter out 0-byte items
-    children = children.filter(c => c.totalSize > 0);
     children.sort((a, b) => b.totalSize - a.totalSize);
-
     const totalChildSize = children.reduce((acc, c) => acc + c.totalSize, 0);
 
     if (children.length === 0 || level >= maxDepth || totalChildSize <= 0) {
@@ -1956,7 +1969,8 @@
     // Squarify all children into the rectangle [x, y, width, height]
     const rects = squarify(children, totalChildSize, x, y, width, height);
 
-    rects.forEach(item => {
+    for (let i = 0; i < rects.length; i++) {
+      const item = rects[i];
       const hasSubChildren = (item.node.subDirs && item.node.subDirs.length > 0) || 
                              (item.node.files && item.node.files.length > 0);
       const isLeafChild = item.node.isFile || level + 1 >= maxDepth || !hasSubChildren;
@@ -1972,11 +1986,10 @@
           isLeaf: true,
         });
       } else {
-        // Recurse into subdirectory
-        const subResults = computeSquarifiedLayout(item.node, item.x, item.y, item.w, item.h, level + 1, maxDepth);
-        results.push(...subResults);
+        // Recurse into subdirectory passing results accumulator directly (Stack-Safe)
+        computeSquarifiedLayout(item.node, item.x, item.y, item.w, item.h, level + 1, maxDepth, results);
       }
-    });
+    }
 
     return results;
   }
@@ -1986,7 +1999,7 @@
     if (children.length === 0 || width <= 0 || height <= 0 || totalSize <= 0) return [];
 
     const rects = [];
-    let remaining = [...children];
+    let remaining = children.slice();
     let remSize = totalSize;
     let rx = x;
     let ry = y;
@@ -2004,7 +2017,7 @@
       let i = 1;
 
       while (i < remaining.length) {
-        const testRow = [...row, remaining[i]];
+        const testRow = row.concat([remaining[i]]);
         const testWorst = worstAspect(testRow, side, remSize, isHorizontal ? rw : rh);
         if (testWorst <= bestWorst) {
           bestWorst = testWorst;
@@ -2020,7 +2033,8 @@
       const stripThickness = remSize > 0 ? (rowSum / remSize) * (isHorizontal ? rw : rh) : 0;
 
       let offset = 0;
-      for (const item of row) {
+      for (let j = 0; j < row.length; j++) {
+        const item = row[j];
         const itemLen = rowSum > 0 ? (item.totalSize / rowSum) * side : 0;
         if (isHorizontal) {
           rects.push({
@@ -2064,7 +2078,8 @@
     if (rowThickness <= 0) return Infinity;
 
     let maxRatio = 0;
-    for (const item of row) {
+    for (let i = 0; i < row.length; i++) {
+      const item = row[i];
       const itemLen = (item.totalSize / rowSum) * side;
       if (itemLen <= 0) return Infinity;
       const ratio = Math.max(itemLen / rowThickness, rowThickness / itemLen);
@@ -2096,7 +2111,8 @@
     const leaves = state.treemap.layoutNodes.filter(n => n.isLeaf);
 
     // Draw leaf cushions (True WinDirStat 3D Specular Pillows)
-    leaves.forEach(n => {
+    for (let i = 0; i < leaves.length; i++) {
+      const n = leaves[i];
       const isHovered = state.treemap.hoveredNode && state.treemap.hoveredNode.node.path === n.node.path;
       const isSelected = state.treemap.selectedNode && state.treemap.selectedNode.node.path === n.node.path;
       const baseColor = getNodeColor(n.node, colorMode, n.level);
@@ -2105,7 +2121,7 @@
       const sublabel = formatBytes(n.node.totalSize);
 
       drawCushionRect(ctx, n.x, n.y, n.w, n.h, baseColor, isHovered, isSelected, label, sublabel, n.isLeaf, n.level);
-    });
+    }
   }
 
   // Draw Authentic WinDirStat 3D Glossy Cushion Shading
@@ -2187,7 +2203,7 @@
     }
   }
 
-  // Render Treemap Legend Bar (Dynamic File Extension Stats - WinDirStat Style)
+  // Render Treemap Legend Bar (Dynamic File Extension Stats - WinDirStat Style, Iterative & Stack-Safe)
   function renderTreemapLegend() {
     if (!elements.treemapLegendBar) return;
     const colorMode = state.treemap.colorMode || 'extension';
@@ -2215,14 +2231,26 @@
         </div>
       `).join('');
     } else {
-      // Dynamic Extension Stats from Current Tree
+      // Dynamic Extension Stats from Current Tree (Iterative Queue Traversal - Stack-Safe)
       const extStats = {};
       let totalTreeBytes = 0;
+      const queue = [];
 
-      function collectExt(node) {
-        if (!node) return;
+      if (Array.isArray(state.treemap.rawTree)) {
+        for (let i = 0; i < state.treemap.rawTree.length; i++) {
+          if (state.treemap.rawTree[i]) queue.push(state.treemap.rawTree[i]);
+        }
+      } else if (state.treemap.rawTree) {
+        queue.push(state.treemap.rawTree);
+      }
+
+      while (queue.length > 0) {
+        const node = queue.pop();
+        if (!node) continue;
         if (node.files && Array.isArray(node.files)) {
-          for (const f of node.files) {
+          for (let i = 0; i < node.files.length; i++) {
+            const f = node.files[i];
+            if (!f) continue;
             const sz = f.size || f.totalSize || 0;
             if (sz <= 0) continue;
             totalTreeBytes += sz;
@@ -2235,16 +2263,10 @@
           }
         }
         if (node.subDirs && Array.isArray(node.subDirs)) {
-          for (const d of node.subDirs) {
-            collectExt(d);
+          for (let i = 0; i < node.subDirs.length; i++) {
+            if (node.subDirs[i]) queue.push(node.subDirs[i]);
           }
         }
-      }
-
-      if (Array.isArray(state.treemap.rawTree)) {
-        state.treemap.rawTree.forEach(collectExt);
-      } else if (state.treemap.rawTree) {
-        collectExt(state.treemap.rawTree);
       }
 
       const sortedExts = Object.values(extStats).sort((a, b) => b.totalBytes - a.totalBytes);
@@ -2311,7 +2333,9 @@
       state.dupTotalGroups = data.totalGroups || 0;
 
       if (data.groups && data.groups.length > 0) {
-        state.dupGroups.push(...data.groups);
+        for (let i = 0; i < data.groups.length; i++) {
+          state.dupGroups.push(data.groups[i]);
+        }
       }
 
       renderDuplicates(data, !reset);
@@ -2830,7 +2854,9 @@
       state.folderDupTotalGroups = data.totalGroups || 0;
 
       if (data.groups && data.groups.length > 0) {
-        state.folderDupGroups.push(...data.groups);
+        for (let i = 0; i < data.groups.length; i++) {
+          state.folderDupGroups.push(data.groups[i]);
+        }
       }
 
       renderFolderDuplicates(data, !reset);

@@ -339,6 +339,12 @@ func (tm *TreeManager) RemoveFile(filePath string) (int64, bool) {
 
 // GetDirSummary returns a summary of the requested directory for tree navigation in the UI.
 func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int) *DirSummary {
+	if maxDepth <= 0 {
+		maxDepth = 5
+	} else if maxDepth > 10 {
+		maxDepth = 10
+	}
+
 	node := tm.FindDir(dirPath)
 	if node == nil {
 		return nil
@@ -370,7 +376,7 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 
 	// Preserve files for treemap and table visualization:
 	// For the current folder (depth 1), include all direct files.
-	// For subfolders (depth > 1), include the top largest files (up to 150 per folder)
+	// For subfolders (depth > 1), include the top largest files (up to 50 per folder)
 	// so huge files (e.g. disk.vhdx, ISOs, ZIPs, virtual disks) are rendered in the Treemap
 	// while keeping payload light and protecting memory.
 	if currentDepth == 1 {
@@ -382,7 +388,7 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		sort.Slice(sortedFiles, func(i, j int) bool {
 			return sortedFiles[i].Size > sortedFiles[j].Size
 		})
-		maxFilesPerDir := 150
+		maxFilesPerDir := 50
 		if len(sortedFiles) > maxFilesPerDir {
 			sortedFiles = sortedFiles[:maxFilesPerDir]
 		}
@@ -411,9 +417,9 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		sort.Slice(subDirs, func(i, j int) bool {
 			return subDirs[i].TotalSize > subDirs[j].TotalSize
 		})
-		// Cap subdirs per folder to top 500 largest subfolders to keep UI instantly snappy
-		if len(subDirs) > 500 {
-			subDirs = subDirs[:500]
+		// Cap subdirs per folder to top 100 largest subfolders to keep UI instantly snappy
+		if len(subDirs) > 100 {
+			subDirs = subDirs[:100]
 		}
 		summary.SubDirs = subDirs
 	}
