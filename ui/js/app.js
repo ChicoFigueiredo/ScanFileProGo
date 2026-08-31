@@ -2715,10 +2715,6 @@
     updateSelectionSummary();
   }
 
-
-    updateSelectionSummary();
-  }
-
   // Strategy Auto-Selection
   function selectDuplicatesByStrategy(strategy) {
     if (!state.duplicatesData || !state.duplicatesData.groups) return;
@@ -3186,8 +3182,6 @@
         loadFolderDuplicates(1);
       }
     );
-  }
-
   }
 
   // Run Folder Direct Side-by-Side Comparison
