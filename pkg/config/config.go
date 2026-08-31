@@ -9,21 +9,30 @@ import (
 
 // AppConfig stores user preferences across sessions.
 type AppConfig struct {
-	SelectedRoots     []string `json:"selectedRoots"`
-	WorkerThreads     int      `json:"workerThreads"`
-	HashAlgorithm     string   `json:"hashAlgorithm"`
-	HashMode          string   `json:"hashMode"` // "smart" or "all"
+	Theme                   string   `json:"theme"`
+	SelectedRoots           []string `json:"selectedRoots"`
+	WorkerThreads           int      `json:"workerThreads"`
+	HashAlgorithm           string   `json:"hashAlgorithm"`
+	HashMode                string   `json:"hashMode"` // "smart" or "all"
 	MinFileSize             int64    `json:"minFileSize"`
 	AutoSaveIntervalMinutes int      `json:"autoSaveIntervalMinutes"`
 	TreemapDepth            int      `json:"treemapDepth"`
 	TreemapColorMode        string   `json:"treemapColorMode"` // "extension", "depth", "age"
 	TreemapViewMode         string   `json:"treemapViewMode"`  // "split", "treemap", "table"
+	TreeTableLimit          int      `json:"treeTableLimit"`
 	DuplicatesSortBy        string   `json:"duplicatesSortBy"`
 	DuplicatesMinSize       int64    `json:"duplicatesMinSize"`
+	DupLimit                int      `json:"dupLimit"`
 	IdleMinAgeDays          int      `json:"idleMinAgeDays"`
 	IdleMinSizeBytes        int64    `json:"idleMinSizeBytes"`
+	IdleSortBy              string   `json:"idleSortBy"`
+	IdleLimit               int      `json:"idleLimit"`
 	FolderSortBy            string   `json:"folderSortBy"`
 	FolderMinSize           int64    `json:"folderMinSize"`
+	FolderDupLimit          int      `json:"folderDupLimit"`
+	ChkFolderTopLevelOnly   bool     `json:"chkFolderTopLevelOnly"`
+	ComparePathA            string   `json:"comparePathA"`
+	ComparePathB            string   `json:"comparePathB"`
 	UIZoom                  int      `json:"uiZoom"`
 	
 	// AI Assistant Settings
@@ -43,6 +52,7 @@ var (
 // GetDefaultConfig returns default initial configuration.
 func GetDefaultConfig() AppConfig {
 	return AppConfig{
+		Theme:                   "theme-ochre-dark",
 		SelectedRoots:           []string{},
 		WorkerThreads:           8,
 		HashAlgorithm:           "xxhash",
@@ -52,12 +62,20 @@ func GetDefaultConfig() AppConfig {
 		TreemapDepth:            5,
 		TreemapColorMode:        "extension",
 		TreemapViewMode:         "split",
+		TreeTableLimit:          50,
 		DuplicatesSortBy:        "size_desc",
 		DuplicatesMinSize:       0,
+		DupLimit:                50,
 		IdleMinAgeDays:          365,
 		IdleMinSizeBytes:        104857600, // 100 MB
+		IdleSortBy:              "size_desc",
+		IdleLimit:               50,
 		FolderSortBy:            "wasted_desc",
 		FolderMinSize:           0,
+		FolderDupLimit:          50,
+		ChkFolderTopLevelOnly:   false,
+		ComparePathA:            "",
+		ComparePathB:            "",
 		UIZoom:                  100,
 		AIProvider:              "ollama",
 		AIOllamaEndpoint:        "http://127.0.0.1:11434",

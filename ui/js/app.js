@@ -355,19 +355,18 @@
   // ==========================================
   function setupThemeManager() {
     const savedTheme = localStorage.getItem('scanfile_theme') || 'theme-ochre-dark';
-    applyTheme(savedTheme);
+    applyTheme(savedTheme, false);
 
     if (elements.themeSelector) {
       elements.themeSelector.value = state.theme || savedTheme;
       elements.themeSelector.addEventListener('change', (e) => {
         const newTheme = e.target.value;
-        applyTheme(newTheme);
-        localStorage.setItem('scanfile_theme', newTheme);
+        applyTheme(newTheme, true);
       });
     }
   }
 
-  function applyTheme(theme) {
+  function applyTheme(theme, save = false) {
     if (!theme) theme = 'theme-ochre-dark';
     // Backwards compatibility mappings
     if (theme === 'ochre-dark') theme = 'theme-ochre-dark';
@@ -386,6 +385,9 @@
 
     document.body.classList.add(theme);
     state.theme = theme;
+    try {
+      localStorage.setItem('scanfile_theme', theme);
+    } catch (e) {}
 
     if (elements.themeSelector && elements.themeSelector.value !== theme) {
       elements.themeSelector.value = theme;
@@ -394,7 +396,12 @@
     if (state.currentTab === 'treeTab') {
       setTimeout(() => resizeTreemapCanvas(), 50);
     }
+
+    if (save && typeof saveCurrentConfig === 'function') {
+      saveCurrentConfig();
+    }
   }
+
 
 
   // ==========================================
@@ -762,8 +769,13 @@
       saveCurrentConfig();
     });
     if (elements.dupFolderSearch) elements.dupFolderSearch.addEventListener('input', debounce(() => loadFolderDuplicates(1), 300));
-    if (elements.chkFolderTopLevelOnly) elements.chkFolderTopLevelOnly.addEventListener('change', () => loadFolderDuplicates(1));
+    if (elements.chkFolderTopLevelOnly) elements.chkFolderTopLevelOnly.addEventListener('change', () => {
+      loadFolderDuplicates(1);
+      saveCurrentConfig();
+    });
     if (elements.btnRefreshFolderDuplicates) elements.btnRefreshFolderDuplicates.addEventListener('click', () => loadFolderDuplicates(1));
+    if (elements.comparePathA) elements.comparePathA.addEventListener('change', () => saveCurrentConfig());
+    if (elements.comparePathB) elements.comparePathB.addEventListener('change', () => saveCurrentConfig());
 
 
     // UI Zoom Control Listeners
@@ -821,6 +833,15 @@
     }
   }
 
+  // Debounce utility
+  function debounce(func, wait) {
+    let timeout;
+    return function (...args) {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
   // Load User Saved Configuration Preferences
   async function loadSavedConfig() {
     try {
@@ -828,6 +849,10 @@
       if (!res.ok) return;
       const cfg = await res.json();
       if (!cfg) return;
+
+      if (cfg.theme) {
+        applyTheme(cfg.theme, false);
+      }
 
       if (cfg.uiZoom) {
         setUIZoom(cfg.uiZoom, false);
@@ -857,15 +882,28 @@
           elements.treeSplitLayout.className = `tree-split-layout view-${cfg.treemapViewMode}`;
         }
       }
+      if (cfg.treeTableLimit) {
+        state.treeTableLimit = cfg.treeTableLimit;
+      }
 
       if (cfg.duplicatesSortBy && elements.dupSortBy) elements.dupSortBy.value = cfg.duplicatesSortBy;
       if (cfg.duplicatesMinSize !== undefined && elements.dupMinSize) elements.dupMinSize.value = String(cfg.duplicatesMinSize);
+      if (cfg.dupLimit) state.dupLimit = cfg.dupLimit;
 
       if (cfg.idleMinAgeDays && elements.idleMinAge) elements.idleMinAge.value = String(cfg.idleMinAgeDays);
       if (cfg.idleMinSizeBytes !== undefined && elements.idleMinSize) elements.idleMinSize.value = String(cfg.idleMinSizeBytes);
+      if (cfg.idleSortBy && elements.idleSortBy) elements.idleSortBy.value = cfg.idleSortBy;
+      if (cfg.idleLimit) state.idleLimit = cfg.idleLimit;
 
       if (cfg.folderSortBy && elements.dupFolderSortBy) elements.dupFolderSortBy.value = cfg.folderSortBy;
       if (cfg.folderMinSize !== undefined && elements.dupFolderMinSize) elements.dupFolderMinSize.value = String(cfg.folderMinSize);
+      if (cfg.folderDupLimit) state.folderDupLimit = cfg.folderDupLimit;
+      if (cfg.chkFolderTopLevelOnly !== undefined && elements.chkFolderTopLevelOnly) {
+        elements.chkFolderTopLevelOnly.checked = !!cfg.chkFolderTopLevelOnly;
+      }
+
+      if (cfg.comparePathA && elements.comparePathA) elements.comparePathA.value = cfg.comparePathA;
+      if (cfg.comparePathB && elements.comparePathB) elements.comparePathB.value = cfg.comparePathB;
 
       if (cfg.selectedRoots && Array.isArray(cfg.selectedRoots) && cfg.selectedRoots.length > 0) {
         state.selectedRoots = new Set(cfg.selectedRoots);
@@ -876,8 +914,9 @@
   }
 
   // Save User Configuration Preferences to scanfile_config.json
-  async function saveCurrentConfig() {
+  const saveCurrentConfig = debounce(async function () {
     const payload = {
+      theme: state.theme || localStorage.getItem('scanfile_theme') || 'theme-ochre-dark',
       selectedRoots: Array.from(state.selectedRoots),
       workerThreads: elements.workerThreads ? parseInt(elements.workerThreads.value, 10) : 8,
       hashAlgorithm: elements.hashAlgo ? elements.hashAlgo.value : 'xxhash',
@@ -887,12 +926,20 @@
       treemapDepth: state.treemap ? state.treemap.depth : 5,
       treemapColorMode: state.treemap ? state.treemap.colorMode : 'extension',
       treemapViewMode: state.treemap ? state.treemap.viewMode : 'split',
+      treeTableLimit: state.treeTableLimit || 50,
       duplicatesSortBy: elements.dupSortBy ? elements.dupSortBy.value : 'size_desc',
       duplicatesMinSize: elements.dupMinSize ? parseInt(elements.dupMinSize.value, 10) : 0,
+      dupLimit: state.dupLimit || 50,
       idleMinAgeDays: elements.idleMinAge ? parseInt(elements.idleMinAge.value, 10) : 365,
       idleMinSizeBytes: elements.idleMinSize ? parseInt(elements.idleMinSize.value, 10) : 104857600,
+      idleSortBy: elements.idleSortBy ? elements.idleSortBy.value : 'size_desc',
+      idleLimit: state.idleLimit || 50,
       folderSortBy: elements.dupFolderSortBy ? elements.dupFolderSortBy.value : 'wasted_desc',
       folderMinSize: elements.dupFolderMinSize ? parseInt(elements.dupFolderMinSize.value, 10) : 0,
+      folderDupLimit: state.folderDupLimit || 50,
+      chkFolderTopLevelOnly: elements.chkFolderTopLevelOnly ? elements.chkFolderTopLevelOnly.checked : false,
+      comparePathA: elements.comparePathA ? elements.comparePathA.value.trim() : '',
+      comparePathB: elements.comparePathB ? elements.comparePathB.value.trim() : '',
       uiZoom: state.uiZoom || 100,
     };
 
@@ -905,16 +952,8 @@
     } catch (e) {
       console.warn('Erro ao salvar preferências:', e);
     }
-  }
+  }, 250);
 
-  // Debounce utility
-  function debounce(func, wait) {
-    let timeout;
-    return function (...args) {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-  }
 
   // Fetch Windows Privileges & Elevation Status
   async function fetchPrivileges() {
