@@ -26,14 +26,21 @@
     folderDuplicatesData: null,
     folderComparisonData: null,
     folderDiffFilter: 'ALL',
-    dupOffset: 0,
+    dupPage: 1,
     dupLimit: 50,
+    dupOffset: 0,
     dupGroups: [],
     dupTotalGroups: 0,
-    folderDupOffset: 0,
+    folderDupPage: 1,
     folderDupLimit: 50,
+    folderDupOffset: 0,
     folderDupGroups: [],
     folderDupTotalGroups: 0,
+    idlePage: 1,
+    idleLimit: 50,
+    idleSortBy: 'size_desc',
+    treeTablePage: 1,
+    treeTableLimit: 50,
     isLoadingDups: false,
     isLoadingFolderDups: false,
     selectedFilesForDelete: new Map(), // Map<path, size>
@@ -42,6 +49,7 @@
     eventLogs: [],
     sseSource: null,
     uiZoom: 100,
+    theme: 'ochre-dark',
     ai: {
       provider: 'ollama',
       selectedModel: 'qwen2.5:1.5b',
@@ -54,6 +62,19 @@
 
   // DOM Elements
   const elements = {
+    themeSelector: document.getElementById('themeSelector'),
+    memAppUsage: document.getElementById('memAppUsage'),
+    memSysUsage: document.getElementById('memSysUsage'),
+    memoryBarFill: document.getElementById('memoryBarFill'),
+    footerStatusText: document.getElementById('footerStatusText'),
+    footerMemoryText: document.getElementById('footerMemoryText'),
+    footerThreadsText: document.getElementById('footerThreadsText'),
+    footerRootsCount: document.getElementById('footerRootsCount'),
+    treePaginationBar: document.getElementById('treePaginationBar'),
+    dupPaginationBar: document.getElementById('dupPaginationBar'),
+    folderDupPaginationBar: document.getElementById('folderDupPaginationBar'),
+    idlePaginationBar: document.getElementById('idlePaginationBar'),
+    idleSortBy: document.getElementById('idleSortBy'),
     btnZoomIn: document.getElementById('btnZoomIn'),
     btnZoomOut: document.getElementById('btnZoomOut'),
     zoomLevelDisplay: document.getElementById('zoomLevelDisplay'),
@@ -63,6 +84,7 @@
     btnElevateAdmin: document.getElementById('btnElevateAdmin'),
     liveBadge: document.getElementById('liveBadge'),
     liveStatusText: document.getElementById('liveStatusText'),
+
     drivesGrid: document.getElementById('drivesGrid'),
     btnSelectAllDrives: document.getElementById('btnSelectAllDrives'),
     btnRefreshDrives: document.getElementById('btnRefreshDrives'),
@@ -328,8 +350,173 @@
     }, 4000);
   }
 
+  // ==========================================
+  // THEME MANAGER & OCHRE TONES
+  // ==========================================
+  function setupThemeManager() {
+    const savedTheme = localStorage.getItem('scanfile_theme') || 'ochre-dark';
+    applyTheme(savedTheme);
+
+    if (elements.themeSelector) {
+      elements.themeSelector.value = savedTheme;
+      elements.themeSelector.addEventListener('change', (e) => {
+        const newTheme = e.target.value;
+        applyTheme(newTheme);
+        localStorage.setItem('scanfile_theme', newTheme);
+      });
+    }
+  }
+
+  function applyTheme(theme) {
+    document.body.classList.remove('theme-ochre-dark', 'theme-ochre-light', 'theme-obsidian', 'dark-theme');
+    if (theme === 'ochre-light') {
+      document.body.classList.add('theme-ochre-light');
+    } else if (theme === 'obsidian') {
+      document.body.classList.add('theme-obsidian');
+    } else {
+      document.body.classList.add('theme-ochre-dark');
+    }
+    state.theme = theme;
+  }
+
+  // ==========================================
+  // REALTIME MEMORY TELEMETRY
+  // ==========================================
+  async function pollMemoryStats() {
+    try {
+      const res = await fetch('/api/system/memory');
+      if (res.ok) {
+        const data = await res.json();
+        updateMemoryTelemetry(data);
+      }
+    } catch (e) {
+      // Quiet background polling
+    }
+  }
+
+  function updateMemoryTelemetry(mem) {
+    if (!mem) return;
+    const allocMB = mem.allocMB !== undefined ? mem.allocMB : (mem.AllocMB || 0);
+    const sysMB = mem.sysMB !== undefined ? mem.sysMB : (mem.SysMB || 0);
+    const sysTotalMB = mem.systemTotalRAMMB !== undefined ? mem.systemTotalRAMMB : (mem.SystemTotalRAMMB || 0);
+    const sysUsedMB = mem.systemUsedRAMMB !== undefined ? mem.systemUsedRAMMB : (mem.SystemUsedRAMMB || 0);
+    const sysTotalGB = (sysTotalMB / 1024).toFixed(1);
+    const sysUsedGB = (sysUsedMB / 1024).toFixed(1);
+    const sysPct = Math.round(mem.systemPercent !== undefined ? mem.systemPercent : (mem.SystemPercent || 0));
+
+    if (elements.memAppUsage) {
+      elements.memAppUsage.textContent = `${allocMB} MB (Heap: ${sysMB} MB)`;
+    }
+    if (elements.memSysUsage) {
+      elements.memSysUsage.textContent = `SO: ${sysUsedGB} / ${sysTotalGB} GB (${sysPct}%)`;
+    }
+    if (elements.memoryBarFill) {
+      elements.memoryBarFill.style.width = `${Math.min(100, Math.max(2, sysPct))}%`;
+      // Change color based on RAM pressure
+      if (sysPct > 85) {
+        elements.memoryBarFill.style.background = 'linear-gradient(90deg, #f59e0b, #ef4444)';
+      } else {
+        elements.memoryBarFill.style.background = 'linear-gradient(90deg, #10b981, #f59e0b)';
+      }
+    }
+    if (elements.footerMemoryText) {
+      elements.footerMemoryText.textContent = `RAM App: ${allocMB} MB / SO: ${sysUsedGB} GB (${sysPct}%)`;
+    }
+  }
+
+  // ==========================================
+  // UNIVERSAL HIGH-PERFORMANCE PAGINATOR
+  // ==========================================
+  function renderPaginationBar(container, totalItems, currentPage, pageSize, onPageChange, onPageSizeChange) {
+    if (!container) return;
+    if (totalItems <= 0) {
+      container.innerHTML = '';
+      return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const startItem = (currentPage - 1) * pageSize + 1;
+    const endItem = Math.min(totalItems, currentPage * pageSize);
+
+    let pagesHtml = '';
+    const maxButtons = 5;
+    let startPage = Math.max(1, currentPage - Math.floor(maxButtons / 2));
+    let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+    if (endPage - startPage + 1 < maxButtons) {
+      startPage = Math.max(1, endPage - maxButtons + 1);
+    }
+
+    if (startPage > 1) {
+      pagesHtml += `<button class="pagination-page-btn" data-page="1">1</button>`;
+      if (startPage > 2) {
+        pagesHtml += `<span style="color:var(--text-muted); padding:0 3px;">...</span>`;
+      }
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+      pagesHtml += `<button class="pagination-page-btn ${p === currentPage ? 'active' : ''}" data-page="${p}">${p}</button>`;
+    }
+
+    if (endPage < totalPages) {
+      if (endPage < totalPages - 1) {
+        pagesHtml += `<span style="color:var(--text-muted); padding:0 3px;">...</span>`;
+      }
+      pagesHtml += `<button class="pagination-page-btn" data-page="${totalPages}">${totalPages}</button>`;
+    }
+
+    container.innerHTML = `
+      <div class="pagination-left">
+        <span class="pagination-info">Exibindo <strong>${formatNumber(startItem)}</strong> - <strong>${formatNumber(endItem)}</strong> de <strong>${formatNumber(totalItems)}</strong> itens</span>
+      </div>
+      <div class="pagination-right">
+        <div class="pagination-pages">
+          <button class="pagination-btn" id="pgBtnFirst" ${currentPage <= 1 ? 'disabled' : ''} title="Primeira Página">«</button>
+          <button class="pagination-btn" id="pgBtnPrev" ${currentPage <= 1 ? 'disabled' : ''} title="Página Anterior">‹</button>
+          ${pagesHtml}
+          <button class="pagination-btn" id="pgBtnNext" ${currentPage >= totalPages ? 'disabled' : ''} title="Próxima Página">›</button>
+          <button class="pagination-btn" id="pgBtnLast" ${currentPage >= totalPages ? 'disabled' : ''} title="Última Página">»</button>
+        </div>
+        <select class="pagination-select" id="pgSelectLimit" title="Itens por página">
+          <option value="25" ${pageSize === 25 ? 'selected' : ''}>25 / pág</option>
+          <option value="50" ${pageSize === 50 ? 'selected' : ''}>50 / pág</option>
+          <option value="100" ${pageSize === 100 ? 'selected' : ''}>100 / pág</option>
+          <option value="250" ${pageSize === 250 ? 'selected' : ''}>250 / pág</option>
+          <option value="500" ${pageSize === 500 ? 'selected' : ''}>500 / pág</option>
+        </select>
+      </div>
+    `;
+
+    container.querySelectorAll('.pagination-page-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const page = parseInt(btn.getAttribute('data-page'), 10);
+        if (page && page !== currentPage) onPageChange(page);
+      });
+    });
+
+    const btnFirst = container.querySelector('#pgBtnFirst');
+    if (btnFirst) btnFirst.addEventListener('click', () => onPageChange(1));
+
+    const btnPrev = container.querySelector('#pgBtnPrev');
+    if (btnPrev) btnPrev.addEventListener('click', () => onPageChange(currentPage - 1));
+
+    const btnNext = container.querySelector('#pgBtnNext');
+    if (btnNext) btnNext.addEventListener('click', () => onPageChange(currentPage + 1));
+
+    const btnLast = container.querySelector('#pgBtnLast');
+    if (btnLast) btnLast.addEventListener('click', () => onPageChange(totalPages));
+
+    const selectLimit = container.querySelector('#pgSelectLimit');
+    if (selectLimit) {
+      selectLimit.addEventListener('change', (e) => {
+        const newLimit = parseInt(e.target.value, 10);
+        if (newLimit && onPageSizeChange) onPageSizeChange(newLimit);
+      });
+    }
+  }
+
   // Initialize
   async function init() {
+    try { setupThemeManager(); } catch (e) { console.error('Error in setupThemeManager:', e); }
     try { setupTabs(); } catch (e) { console.error('Error in setupTabs:', e); }
     try { setupEventListeners(); } catch (e) { console.error('Error in setupEventListeners:', e); }
     try { setupTreemap(); } catch (e) { console.error('Error in setupTreemap:', e); }
@@ -342,7 +529,9 @@
     try { setupSSE(); } catch (e) { console.error('Error in setupSSE:', e); }
     try { fetchEventLogs(); } catch (e) { console.error('Error in fetchEventLogs:', e); }
     try { checkAutoSaveStatus(); } catch (e) { console.error('Error in checkAutoSaveStatus:', e); }
+    try { pollMemoryStats(); setInterval(pollMemoryStats, 2500); } catch (e) { console.error('Error in pollMemoryStats:', e); }
   }
+
 
   // Tabs Switching
   function setupTabs() {
@@ -522,15 +711,19 @@
 
     // Idle files listeners
     if (elements.idleMinAge) elements.idleMinAge.addEventListener('change', () => {
-      loadIdleFiles();
+      loadIdleFiles(1);
       saveCurrentConfig();
     });
     if (elements.idleMinSize) elements.idleMinSize.addEventListener('change', () => {
-      loadIdleFiles();
+      loadIdleFiles(1);
       saveCurrentConfig();
     });
-    if (elements.idleSearch) elements.idleSearch.addEventListener('input', debounce(loadIdleFiles, 300));
-    if (elements.btnRefreshIdle) elements.btnRefreshIdle.addEventListener('click', loadIdleFiles);
+    if (elements.idleSortBy) elements.idleSortBy.addEventListener('change', () => {
+      loadIdleFiles(1);
+      saveCurrentConfig();
+    });
+    if (elements.idleSearch) elements.idleSearch.addEventListener('input', debounce(() => loadIdleFiles(1), 300));
+    if (elements.btnRefreshIdle) elements.btnRefreshIdle.addEventListener('click', () => loadIdleFiles(1));
     if (elements.btnSelectAllIdle) elements.btnSelectAllIdle.addEventListener('click', selectAllIdleFiles);
     if (elements.btnClearIdleSelection) elements.btnClearIdleSelection.addEventListener('click', clearIdleSelection);
     if (elements.btnRecycleIdleSelected) elements.btnRecycleIdleSelected.addEventListener('click', recycleIdleSelectedFiles);
@@ -543,41 +736,17 @@
 
     // Folder Duplicate listeners
     if (elements.dupFolderSortBy) elements.dupFolderSortBy.addEventListener('change', () => {
-      loadFolderDuplicates(true);
+      loadFolderDuplicates(1);
       saveCurrentConfig();
     });
     if (elements.dupFolderMinSize) elements.dupFolderMinSize.addEventListener('change', () => {
-      loadFolderDuplicates(true);
+      loadFolderDuplicates(1);
       saveCurrentConfig();
     });
+    if (elements.dupFolderSearch) elements.dupFolderSearch.addEventListener('input', debounce(() => loadFolderDuplicates(1), 300));
+    if (elements.chkFolderTopLevelOnly) elements.chkFolderTopLevelOnly.addEventListener('change', () => loadFolderDuplicates(1));
+    if (elements.btnRefreshFolderDuplicates) elements.btnRefreshFolderDuplicates.addEventListener('click', () => loadFolderDuplicates(1));
 
-    // Infinite scroll on Duplicates Container
-    if (elements.duplicatesContainer) {
-      elements.duplicatesContainer.addEventListener('scroll', () => {
-        const c = elements.duplicatesContainer;
-        if (c.scrollTop + c.clientHeight >= c.scrollHeight - 160) {
-          if (!state.isLoadingDups && state.dupGroups && state.dupGroups.length < state.dupTotalGroups) {
-            state.dupOffset += (state.dupLimit || 50);
-            state.dupLimit = 50;
-            loadDuplicates(false);
-          }
-        }
-      });
-    }
-
-    // Infinite scroll on Folder Duplicates Container
-    if (elements.folderDuplicatesContainer) {
-      elements.folderDuplicatesContainer.addEventListener('scroll', () => {
-        const c = elements.folderDuplicatesContainer;
-        if (c.scrollTop + c.clientHeight >= c.scrollHeight - 160) {
-          if (!state.isLoadingFolderDups && state.folderDupGroups && state.folderDupGroups.length < state.folderDupTotalGroups) {
-            state.folderDupOffset += (state.folderDupLimit || 50);
-            state.folderDupLimit = 50;
-            loadFolderDuplicates(false);
-          }
-        }
-      });
-    }
 
     // UI Zoom Control Listeners
     if (elements.btnZoomIn) {
@@ -1030,8 +1199,20 @@
   function updateScanProgress(st) {
     if (!st) return;
 
+    if (st.memoryStats || st.MemoryStats) {
+      updateMemoryTelemetry(st.memoryStats || st.MemoryStats);
+    }
+
+    if (elements.footerStatusText) {
+      elements.footerStatusText.textContent = st.isScanning ? `Varredura ativa (${st.phase || 'processando'})` : (st.isWatching ? 'Monitoramento em Tempo Real' : 'Pronto para varredura');
+    }
+    if (elements.footerRootsCount) {
+      elements.footerRootsCount.textContent = `${state.selectedRoots.size} disco(s) selecionado(s)`;
+    }
+
     elements.statFiles.textContent = formatNumber(st.totalFilesScanned);
     elements.statDirs.textContent = formatNumber(st.totalDirsScanned);
+
     elements.statBytes.textContent = formatBytes(st.totalBytesScanned);
     if (elements.statAllocatedBytes) {
       elements.statAllocatedBytes.textContent = formatBytes(st.totalAllocatedBytesScanned || st.totalBytesScanned);
@@ -1378,6 +1559,7 @@
   // Load Tree and Treemap Data from Backend
   async function loadTreeData(path = '') {
     state.treePath = path;
+    state.treeTablePage = 1;
     renderBreadcrumbs(path);
 
     // Update Title & Subtitle
@@ -1500,10 +1682,18 @@
 
     if (items.length === 0) {
       elements.treeTableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Nenhum item nesta pasta.</td></tr>';
+      if (elements.treePaginationBar) elements.treePaginationBar.innerHTML = '';
       return;
     }
 
-    elements.treeTableBody.innerHTML = items.map(item => {
+    const totalItems = items.length;
+    const pageSize = state.treeTableLimit || 50;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    state.treeTablePage = Math.min(Math.max(1, state.treeTablePage || 1), totalPages);
+    const startIdx = (state.treeTablePage - 1) * pageSize;
+    const pagedItems = items.slice(startIdx, startIdx + pageSize);
+
+    elements.treeTableBody.innerHTML = pagedItems.map(item => {
       const pct = Math.min(100, ((item.totalSize / parentSize) * 100)).toFixed(1);
       const isDir = !item.isFile;
       const allocated = item.totalAllocatedSize !== undefined ? item.totalAllocatedSize : (item.totalSize || 0);
@@ -1556,7 +1746,31 @@
         loadTreeData(p);
       });
     });
+
+    // Render tree pagination bar if items exceed page size
+    if (elements.treePaginationBar) {
+      if (totalItems > pageSize) {
+        renderPaginationBar(
+          elements.treePaginationBar,
+          totalItems,
+          state.treeTablePage,
+          pageSize,
+          (newPage) => {
+            state.treeTablePage = newPage;
+            renderTreeTable();
+          },
+          (newLimit) => {
+            state.treeTableLimit = newLimit;
+            state.treeTablePage = 1;
+            renderTreeTable();
+          }
+        );
+      } else {
+        elements.treePaginationBar.innerHTML = '';
+      }
+    }
   }
+
 
   // Setup Treemap Canvas & Interactions
   function setupTreemap() {
@@ -2306,41 +2520,34 @@
   }
 
   // Load Duplicate Groups
-  async function loadDuplicates(reset = true) {
+  async function loadDuplicates(page = 1) {
     if (state.isLoadingDups) return;
 
-    if (reset) {
-      state.dupOffset = 0;
-      state.dupGroups = [];
-    }
+    state.dupPage = Math.max(1, page);
+    const limit = state.dupLimit || 50;
+    const offset = (state.dupPage - 1) * limit;
 
     const sortBy = elements.dupSortBy ? elements.dupSortBy.value : 'size_desc';
     const minSize = elements.dupMinSize ? elements.dupMinSize.value : 0;
     const search = elements.dupSearch ? elements.dupSearch.value.trim() : '';
-    const limit = state.dupLimit || 50;
 
     try {
       state.isLoadingDups = true;
-      if (reset && elements.duplicatesContainer) {
+      if (elements.duplicatesContainer) {
         elements.duplicatesContainer.innerHTML = '<div class="loading-state">Carregando duplicados por hash...</div>';
       }
 
-      const url = `/api/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}&limit=${limit}&offset=${state.dupOffset}`;
+      const url = `/api/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}&limit=${limit}&offset=${offset}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Falha ao carregar duplicados');
       const data = await res.json();
       state.duplicatesData = data;
+      state.dupGroups = data.groups || [];
       state.dupTotalGroups = data.totalGroups || 0;
 
-      if (data.groups && data.groups.length > 0) {
-        for (let i = 0; i < data.groups.length; i++) {
-          state.dupGroups.push(data.groups[i]);
-        }
-      }
-
-      renderDuplicates(data, !reset);
+      renderDuplicates(data);
     } catch (err) {
-      if (reset && elements.duplicatesContainer) {
+      if (elements.duplicatesContainer) {
         elements.duplicatesContainer.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
       }
     } finally {
@@ -2349,31 +2556,26 @@
   }
 
   // Render Duplicates Cards
-  function renderDuplicates(data, isAppend = false) {
+  function renderDuplicates(data) {
     if (!elements.duplicatesContainer) return;
 
-    if (!isAppend) {
-      if (!state.dupGroups || state.dupGroups.length === 0) {
-        elements.duplicatesContainer.innerHTML = '<div class="empty-state">Nenhum arquivo duplicado encontrado com os filtros atuais.</div>';
-        if (elements.dupTotalGroups) elements.dupTotalGroups.textContent = '0';
-        if (elements.dupTotalFiles) elements.dupTotalFiles.textContent = '0';
-        if (elements.dupTotalWasted) elements.dupTotalWasted.textContent = '0 B';
-        return;
-      }
-
-      if (elements.dupTotalGroups) elements.dupTotalGroups.textContent = formatNumber(data.totalGroups || state.dupGroups.length);
-      if (elements.dupTotalFiles) elements.dupTotalFiles.textContent = formatNumber(data.totalFiles || 0);
-      if (elements.dupTotalWasted) elements.dupTotalWasted.textContent = formatBytes(data.wastedBytes || 0);
-      elements.duplicatesContainer.innerHTML = '';
+    if (!data.groups || data.groups.length === 0) {
+      elements.duplicatesContainer.innerHTML = '<div class="empty-state">Nenhum arquivo duplicado encontrado com os filtros atuais.</div>';
+      if (elements.dupTotalGroups) elements.dupTotalGroups.textContent = '0';
+      if (elements.dupTotalFiles) elements.dupTotalFiles.textContent = '0';
+      if (elements.dupTotalWasted) elements.dupTotalWasted.textContent = '0 B';
+      if (elements.dupPaginationBar) elements.dupPaginationBar.innerHTML = '';
+      return;
     }
 
-    const groupsToRender = isAppend ? (data.groups || []) : state.dupGroups;
-    const existingPagination = elements.duplicatesContainer.querySelector('.dup-pagination-bar');
-    if (existingPagination) existingPagination.remove();
+    if (elements.dupTotalGroups) elements.dupTotalGroups.textContent = formatNumber(data.totalGroups || 0);
+    if (elements.dupTotalFiles) elements.dupTotalFiles.textContent = formatNumber(data.totalFiles || 0);
+    if (elements.dupTotalWasted) elements.dupTotalWasted.textContent = formatBytes(data.wastedBytes || 0);
+    elements.duplicatesContainer.innerHTML = '';
 
     const fragment = document.createDocumentFragment();
 
-    groupsToRender.forEach(grp => {
+    data.groups.forEach(grp => {
       const hashShort = (grp.hash && grp.hash.length > 22) ? grp.hash.substring(0, 22) + '...' : (grp.hash || 'hash');
 
       const card = document.createElement('div');
@@ -2432,7 +2634,7 @@
       card.querySelectorAll('.btn-group-keep-newest').forEach(btn => {
         btn.addEventListener('click', () => {
           const gId = btn.getAttribute('data-group-id');
-          const g = state.dupGroups.find(x => x.id === gId) || grp;
+          const g = data.groups.find(x => x.id === gId) || grp;
           if (!g || !g.files || g.files.length < 2) return;
 
           const newest = g.files[g.files.length - 1];
@@ -2443,7 +2645,6 @@
               state.selectedFilesForDelete.delete(f.path);
             }
           });
-          // Update visual checkboxes in this card
           card.querySelectorAll('.dup-file-row').forEach(row => {
             const cb = row.querySelector('.dup-file-checkbox');
             if (cb) {
@@ -2462,44 +2663,22 @@
 
     elements.duplicatesContainer.appendChild(fragment);
 
-    // Add Pagination Footer if there are more groups
-    const totalGroups = state.dupTotalGroups || 0;
-    if (state.dupGroups.length < totalGroups) {
-      const pagDiv = document.createElement('div');
-      pagDiv.className = 'dup-pagination-bar';
-      pagDiv.style.cssText = 'display: flex; gap: 0.75rem; justify-content: center; align-items: center; padding: 1.5rem 0; flex-wrap: wrap;';
-      pagDiv.innerHTML = `
-        <span style="font-size: 0.85rem; color: var(--text-secondary);">
-          Exibindo ${state.dupGroups.length} de ${formatNumber(totalGroups)} grupos de arquivos duplicados
-        </span>
-        <button id="btnLoadMoreDups" class="btn btn-primary btn-sm">
-          ⬇️ Carregar Mais 50
-        </button>
-        <button id="btnLoadMore200Dups" class="btn btn-secondary btn-sm">
-          ⚡ Carregar Mais 200
-        </button>
-      `;
-
-      const btn50 = pagDiv.querySelector('#btnLoadMoreDups');
-      if (btn50) {
-        btn50.addEventListener('click', () => {
-          state.dupOffset += (state.dupLimit || 50);
-          state.dupLimit = 50;
-          loadDuplicates(false);
-        });
+    // Universal pagination bar
+    renderPaginationBar(
+      elements.dupPaginationBar,
+      data.totalGroups || 0,
+      state.dupPage,
+      state.dupLimit,
+      (newPage) => loadDuplicates(newPage),
+      (newLimit) => {
+        state.dupLimit = newLimit;
+        loadDuplicates(1);
       }
+    );
 
-      const btn200 = pagDiv.querySelector('#btnLoadMore200Dups');
-      if (btn200) {
-        btn200.addEventListener('click', () => {
-          state.dupOffset += (state.dupLimit || 50);
-          state.dupLimit = 200;
-          loadDuplicates(false);
-        });
-      }
+    updateSelectionSummary();
+  }
 
-      elements.duplicatesContainer.appendChild(pagDiv);
-    }
 
     updateSelectionSummary();
   }
@@ -2826,42 +3005,35 @@
   }
 
   // Load Folder Duplicates
-  async function loadFolderDuplicates(reset = true) {
+  async function loadFolderDuplicates(page = 1) {
     if (!elements.folderDuplicatesContainer || state.isLoadingFolderDups) return;
 
-    if (reset) {
-      state.folderDupOffset = 0;
-      state.folderDupGroups = [];
-    }
+    state.folderDupPage = Math.max(1, page);
+    const limit = state.folderDupLimit || 50;
+    const offset = (state.folderDupPage - 1) * limit;
 
     const sortBy = elements.dupFolderSortBy ? elements.dupFolderSortBy.value : 'subdirs_desc';
     const minSize = elements.dupFolderMinSize ? elements.dupFolderMinSize.value : 0;
     const search = elements.dupFolderSearch ? elements.dupFolderSearch.value.trim() : '';
     const topLevelOnly = elements.chkFolderTopLevelOnly ? elements.chkFolderTopLevelOnly.checked : true;
-    const limit = state.folderDupLimit || 50;
 
     try {
       state.isLoadingFolderDups = true;
-      if (reset) {
+      if (elements.folderDuplicatesContainer) {
         elements.folderDuplicatesContainer.innerHTML = '<div class="loading-state">Identificando e classificando pastas clones por hierarquia...</div>';
       }
 
-      const url = `/api/folders/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}&topLevelOnly=${topLevelOnly}&limit=${limit}&offset=${state.folderDupOffset}`;
+      const url = `/api/folders/duplicates?sortBy=${sortBy}&minSize=${minSize}&search=${encodeURIComponent(search)}&topLevelOnly=${topLevelOnly}&limit=${limit}&offset=${offset}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Falha ao obter pastas duplicadas');
       const data = await res.json();
       state.folderDuplicatesData = data;
+      state.folderDupGroups = data.groups || [];
       state.folderDupTotalGroups = data.totalGroups || 0;
 
-      if (data.groups && data.groups.length > 0) {
-        for (let i = 0; i < data.groups.length; i++) {
-          state.folderDupGroups.push(data.groups[i]);
-        }
-      }
-
-      renderFolderDuplicates(data, !reset);
+      renderFolderDuplicates(data);
     } catch (err) {
-      if (reset) {
+      if (elements.folderDuplicatesContainer) {
         elements.folderDuplicatesContainer.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
       }
     } finally {
@@ -2870,36 +3042,31 @@
   }
 
   // Render Duplicate Folders
-  function renderFolderDuplicates(data, isAppend = false) {
+  function renderFolderDuplicates(data) {
     if (!elements.folderDuplicatesContainer) return;
 
-    if (!isAppend) {
-      if (!state.folderDupGroups || state.folderDupGroups.length === 0) {
-        elements.folderDuplicatesContainer.innerHTML = '<div class="empty-state">Nenhuma pasta duplicada encontrada com os filtros atuais. Realize uma varredura para identificar pastas com conteúdo idêntico.</div>';
-        if (elements.dupFolderTotalGroups) elements.dupFolderTotalGroups.textContent = '0';
-        if (elements.dupFolderTotalCount) elements.dupFolderTotalCount.textContent = '0';
-        if (elements.dupFolderTotalWasted) elements.dupFolderTotalWasted.textContent = '0 B';
-        return;
-      }
-
-      const isFilteredTop = elements.chkFolderTopLevelOnly && elements.chkFolderTopLevelOnly.checked;
-      const totalTxt = isFilteredTop && data.topLevelGroups 
-        ? `${formatNumber(data.totalGroups)} (${formatNumber(data.topLevelGroups)} Pastas Raiz)`
-        : formatNumber(data.totalGroups || state.folderDupGroups.length);
-
-      if (elements.dupFolderTotalGroups) elements.dupFolderTotalGroups.textContent = totalTxt;
-      if (elements.dupFolderTotalCount) elements.dupFolderTotalCount.textContent = formatNumber(data.totalFolders || 0);
-      if (elements.dupFolderTotalWasted) elements.dupFolderTotalWasted.textContent = formatBytes(data.wastedBytes || 0);
-      elements.folderDuplicatesContainer.innerHTML = '';
+    if (!data.groups || data.groups.length === 0) {
+      elements.folderDuplicatesContainer.innerHTML = '<div class="empty-state">Nenhuma pasta duplicada encontrada com os filtros atuais. Realize uma varredura para identificar pastas com conteúdo idêntico.</div>';
+      if (elements.dupFolderTotalGroups) elements.dupFolderTotalGroups.textContent = '0';
+      if (elements.dupFolderTotalCount) elements.dupFolderTotalCount.textContent = '0';
+      if (elements.dupFolderTotalWasted) elements.dupFolderTotalWasted.textContent = '0 B';
+      if (elements.folderDupPaginationBar) elements.folderDupPaginationBar.innerHTML = '';
+      return;
     }
 
-    const groupsToRender = isAppend ? (data.groups || []) : state.folderDupGroups;
-    const existingPagination = elements.folderDuplicatesContainer.querySelector('.dup-pagination-bar');
-    if (existingPagination) existingPagination.remove();
+    const isFilteredTop = elements.chkFolderTopLevelOnly && elements.chkFolderTopLevelOnly.checked;
+    const totalTxt = isFilteredTop && data.topLevelGroups 
+      ? `${formatNumber(data.totalGroups)} (${formatNumber(data.topLevelGroups)} Pastas Raiz)`
+      : formatNumber(data.totalGroups || 0);
+
+    if (elements.dupFolderTotalGroups) elements.dupFolderTotalGroups.textContent = totalTxt;
+    if (elements.dupFolderTotalCount) elements.dupFolderTotalCount.textContent = formatNumber(data.totalFolders || 0);
+    if (elements.dupFolderTotalWasted) elements.dupFolderTotalWasted.textContent = formatBytes(data.wastedBytes || 0);
+    elements.folderDuplicatesContainer.innerHTML = '';
 
     const fragment = document.createDocumentFragment();
 
-    groupsToRender.forEach(grp => {
+    data.groups.forEach(grp => {
       const hashShort = (grp.folderHash && grp.folderHash.length > 24) ? grp.folderHash.substring(0, 24) + '...' : (grp.folderHash || 'hash');
       const isRoot = grp.isTopLevel !== false;
       const levelBadge = isRoot 
@@ -2971,44 +3138,20 @@
 
     elements.folderDuplicatesContainer.appendChild(fragment);
 
-    // Add Pagination Footer if there are more folder groups
-    const totalGroups = state.folderDupTotalGroups || 0;
-    if (state.folderDupGroups.length < totalGroups) {
-      const pagDiv = document.createElement('div');
-      pagDiv.className = 'dup-pagination-bar';
-      pagDiv.style.cssText = 'display: flex; gap: 0.75rem; justify-content: center; align-items: center; padding: 1.5rem 0; flex-wrap: wrap;';
-      pagDiv.innerHTML = `
-        <span style="font-size: 0.85rem; color: var(--text-secondary);">
-          Exibindo ${state.folderDupGroups.length} de ${formatNumber(totalGroups)} grupos de pastas clones
-        </span>
-        <button id="btnLoadMoreFolderDups" class="btn btn-primary btn-sm">
-          ⬇️ Carregar Mais 50 Pastas
-        </button>
-        <button id="btnLoadMore200FolderDups" class="btn btn-secondary btn-sm">
-          ⚡ Carregar Mais 200
-        </button>
-      `;
-
-      const btn50 = pagDiv.querySelector('#btnLoadMoreFolderDups');
-      if (btn50) {
-        btn50.addEventListener('click', () => {
-          state.folderDupOffset += (state.folderDupLimit || 50);
-          state.folderDupLimit = 50;
-          loadFolderDuplicates(false);
-        });
+    // Universal pagination bar
+    renderPaginationBar(
+      elements.folderDupPaginationBar,
+      data.totalGroups || 0,
+      state.folderDupPage,
+      state.folderDupLimit,
+      (newPage) => loadFolderDuplicates(newPage),
+      (newLimit) => {
+        state.folderDupLimit = newLimit;
+        loadFolderDuplicates(1);
       }
+    );
+  }
 
-      const btn200 = pagDiv.querySelector('#btnLoadMore200FolderDups');
-      if (btn200) {
-        btn200.addEventListener('click', () => {
-          state.folderDupOffset += (state.folderDupLimit || 50);
-          state.folderDupLimit = 200;
-          loadFolderDuplicates(false);
-        });
-      }
-
-      elements.folderDuplicatesContainer.appendChild(pagDiv);
-    }
   }
 
   // Run Folder Direct Side-by-Side Comparison
@@ -3223,16 +3366,21 @@
   }
 
   // Load Idle / Stale Files
-  async function loadIdleFiles() {
+  async function loadIdleFiles(page = 1) {
     if (!elements.idleTableBody) return;
+
+    state.idlePage = Math.max(1, page);
+    const limit = state.idleLimit || 50;
+    const offset = (state.idlePage - 1) * limit;
 
     const minAge = elements.idleMinAge ? elements.idleMinAge.value : 365;
     const minSize = elements.idleMinSize ? elements.idleMinSize.value : 104857600;
     const search = elements.idleSearch ? elements.idleSearch.value.trim() : '';
+    const sortBy = elements.idleSortBy ? elements.idleSortBy.value : 'size_desc';
 
     try {
       elements.idleTableBody.innerHTML = '<tr><td colspan="6" class="loading-state">Analisando datas de modificação e calculando idades dos arquivos...</td></tr>';
-      const url = `/api/stats/idle-files?minAgeDays=${minAge}&minSize=${minSize}&search=${encodeURIComponent(search)}`;
+      const url = `/api/stats/idle-files?minAgeDays=${minAge}&minSize=${minSize}&search=${encodeURIComponent(search)}&sortBy=${sortBy}&offset=${offset}&limit=${limit}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Falha ao consultar arquivos ociosos');
       const data = await res.json();
@@ -3247,12 +3395,13 @@
   function renderIdleFiles(data) {
     if (!data) return;
 
-    if (elements.idleTotalCount) elements.idleTotalCount.textContent = formatNumber(data.totalIdleFiles);
-    if (elements.idleTotalBytes) elements.idleTotalBytes.textContent = formatBytes(data.totalIdleBytes);
+    if (elements.idleTotalCount) elements.idleTotalCount.textContent = formatNumber(data.totalIdleFiles || 0);
+    if (elements.idleTotalBytes) elements.idleTotalBytes.textContent = formatBytes(data.totalIdleBytes || 0);
 
     // Render Age Buckets Grid
-    if (elements.idleBucketsGrid && data.ageBuckets) {
-      elements.idleBucketsGrid.innerHTML = data.ageBuckets.map(b => `
+    const buckets = data.buckets || data.ageBuckets || [];
+    if (elements.idleBucketsGrid && buckets.length > 0) {
+      elements.idleBucketsGrid.innerHTML = buckets.map(b => `
         <div class="idle-bucket-card">
           <div class="idle-bucket-label">${b.label}</div>
           <div class="idle-bucket-size">${formatBytes(b.totalBytes)}</div>
@@ -3261,16 +3410,19 @@
       `).join('');
     }
 
-    if (!data.topFiles || data.topFiles.length === 0) {
+    const files = data.topFiles || data.files || [];
+    if (files.length === 0) {
       elements.idleTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">Nenhum arquivo ocioso encontrado com os filtros atuais.</td></tr>';
+      if (elements.idlePaginationBar) elements.idlePaginationBar.innerHTML = '';
       updateIdleSelectionSummary();
       return;
     }
 
-    elements.idleTableBody.innerHTML = data.topFiles.map(file => {
+    elements.idleTableBody.innerHTML = files.map(file => {
       const isMarked = state.selectedIdleFiles.has(file.path);
-      const years = (file.inactiveDays / 365.25).toFixed(1);
-      const ageLabel = file.inactiveDays >= 365 ? `${years} anos (${formatNumber(file.inactiveDays)} dias)` : `${formatNumber(file.inactiveDays)} dias`;
+      const inactiveDays = file.daysInactive !== undefined ? file.daysInactive : (file.inactiveDays || 0);
+      const years = (inactiveDays / 365.25).toFixed(1);
+      const ageLabel = inactiveDays >= 365 ? `${years} anos (${formatNumber(inactiveDays)} dias)` : `${formatNumber(inactiveDays)} dias`;
 
       return `
         <tr class="${isMarked ? 'marked-for-delete' : ''}">
@@ -3311,8 +3463,22 @@
       });
     });
 
+    // Universal pagination bar
+    renderPaginationBar(
+      elements.idlePaginationBar,
+      data.totalIdleFiles || 0,
+      state.idlePage,
+      state.idleLimit,
+      (newPage) => loadIdleFiles(newPage),
+      (newLimit) => {
+        state.idleLimit = newLimit;
+        loadIdleFiles(1);
+      }
+    );
+
     updateIdleSelectionSummary();
   }
+
 
   function selectAllIdleFiles() {
     if (!state.idleData || !state.idleData.topFiles) return;

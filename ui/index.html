@@ -28,6 +28,29 @@
 
     <!-- Cache Management, Privilege & Live Status -->
     <div class="header-status-group">
+      <!-- Theme Switcher -->
+      <div class="theme-switcher-wrap" title="Esquema Visual e Tema da Aplicação">
+        <select id="themeSelector" class="form-select form-select-sm theme-select">
+          <option value="ochre-dark" selected>🍂 Ocre Noturno</option>
+          <option value="ochre-light">🏜️ Ocre Areia Dourada</option>
+          <option value="obsidian">🌌 Obsidian Dark</option>
+        </select>
+      </div>
+
+      <!-- Realtime Memory Telemetry Status Widget -->
+      <div id="memoryStatusWidget" class="memory-status-widget" title="Telemetria de Memória RAM em Tempo Real (Processo vs Sistema Operacional)">
+        <div class="memory-widget-icon">⚡</div>
+        <div class="memory-widget-info">
+          <div class="memory-widget-header">
+            <span class="memory-label">RAM App: <strong id="memAppUsage">0 MB</strong></span>
+            <span class="memory-sublabel" id="memSysUsage">SO: 0 / 0 GB (0%)</span>
+          </div>
+          <div class="memory-track">
+            <div id="memoryBarFill" class="memory-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="privilegeBadge" class="privilege-badge admin" title="Permissões de Segurança do Windows">
         <span id="privilegeIcon">👑</span>
         <span id="privilegeText">Verificando Privilégios...</span>
@@ -63,6 +86,7 @@
         </div>
       </div>
     </div>
+
 
     <!-- Navigation Tabs -->
     <nav class="nav-tabs">
@@ -399,6 +423,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="treePaginationBar" class="pagination-bar"></div>
           </div>
 
           <!-- Interactive Draggable Splitter -->
@@ -518,6 +543,7 @@
         <div id="duplicatesContainer" class="duplicates-container">
           <div class="empty-state">Nenhum duplicado indexado ainda. Realize uma varredura para identificar arquivos idênticos por hash.</div>
         </div>
+        <div id="dupPaginationBar" class="pagination-bar"></div>
       </div>
     </section>
 
@@ -593,7 +619,9 @@
           <div id="folderDuplicatesContainer" class="duplicates-container">
             <div class="empty-state">Nenhuma pasta duplicada encontrada. Realize uma varredura para identificar pastas com conteúdo idêntico.</div>
           </div>
+          <div id="folderDupPaginationBar" class="pagination-bar"></div>
         </div>
+
 
         <!-- SUBTAB 2: SIDE-BY-SIDE FOLDER COMPARATOR -->
         <div id="folderCompareSubtab" class="folder-subtab-pane">
@@ -710,6 +738,12 @@
               <option value="0">Qualquer Tamanho</option>
             </select>
 
+            <select id="idleSortBy" class="form-select form-select-sm">
+              <option value="size_desc" selected>Maior Tamanho</option>
+              <option value="days_desc">Mais Antigos (Inatividade)</option>
+              <option value="name_asc">Nome do Arquivo (A-Z)</option>
+            </select>
+
             <input type="text" id="idleSearch" class="form-input form-input-sm" placeholder="Buscar no caminho / extensão...">
             <button id="btnRefreshIdle" class="btn btn-secondary btn-sm">Filtrar</button>
           </div>
@@ -744,8 +778,10 @@
             </tbody>
           </table>
         </div>
+        <div id="idlePaginationBar" class="pagination-bar"></div>
       </div>
     </section>
+
 
     <!-- TAB 7: REALTIME OS WATCHER -->
     <section id="watcherTab" class="tab-pane">
@@ -1023,9 +1059,26 @@
     </div>
   </div>
 
+  <!-- Global System Telemetry Footer -->
+  <footer class="app-system-footer">
+    <div class="footer-left">
+      <span class="footer-brand">⚡ ScanFile Pro Engine</span>
+      <span class="footer-sep">&bull;</span>
+      <span id="footerStatusText">Pronto para varredura</span>
+      <span class="footer-sep">&bull;</span>
+      <span id="footerMemoryText">RAM: 0 MB / SO: 0 GB</span>
+    </div>
+    <div class="footer-right">
+      <span id="footerThreadsText">Threads: 8</span>
+      <span class="footer-sep">&bull;</span>
+      <span id="footerRootsCount">0 discos selecionados</span>
+    </div>
+  </footer>
+
   <!-- Action Modal / Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
   <script src="js/app.js"></script>
 </body>
 </html>
+

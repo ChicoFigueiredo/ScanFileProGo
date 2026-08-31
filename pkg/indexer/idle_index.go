@@ -17,6 +17,7 @@ type IdleFileEntry struct {
 	CreateTime   int64  `json:"createTime"`
 	AccessTime   int64  `json:"accessTime"`
 	DaysInactive int    `json:"daysInactive"`
+	InactiveDays int    `json:"inactiveDays"` // Compatibility alias for frontend
 	Extension    string `json:"extension"`
 }
 
@@ -34,18 +35,26 @@ type IdleFilesSummary struct {
 	TotalIdleFiles int              `json:"totalIdleFiles"`
 	TotalIdleBytes int64            `json:"totalIdleBytes"`
 	Buckets        []AgeBucket      `json:"buckets"`
+	AgeBuckets     []AgeBucket      `json:"ageBuckets"` // Compatibility alias
 	TopFiles       []*IdleFileEntry `json:"topFiles"`
+	Offset         int              `json:"offset"`
+	Limit          int              `json:"limit"`
 }
 
-// QueryIdleFiles scans all in-memory files and identifies large stale/idle data.
-func QueryIdleFiles(allFiles []*scanner.FileNode, minAgeDays int, minSizeBytes int64, extension, search string, limit int) IdleFilesSummary {
+// QueryIdleFilesStreaming scans files in the tree in-place without duplicating 50M slices and returns paginated results.
+func QueryIdleFilesStreaming(tree *scanner.TreeManager, minAgeDays int, minSizeBytes int64, extension, search, sortBy string, offset, limit int) IdleFilesSummary {
 	nowUnix := time.Now().Unix()
 
 	if minAgeDays <= 0 {
 		minAgeDays = 180 // Default: 6 months
 	}
 	if limit <= 0 {
-		limit = 100
+		limit = 50
+	} else if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	searchLower := strings.ToLower(search)
@@ -61,27 +70,26 @@ func QueryIdleFiles(allFiles []*scanner.FileNode, minAgeDays int, minSizeBytes i
 	var candidates []*IdleFileEntry
 	var totalBytes int64
 
-	for _, f := range allFiles {
+	tree.IterateFiles(func(f *scanner.FileNode) bool {
 		if f.Size < minSizeBytes {
-			continue
+			return true
 		}
 
 		if extLower != "" && !strings.EqualFold(f.Extension, extLower) {
-			continue
+			return true
 		}
 
 		if searchLower != "" && !strings.Contains(strings.ToLower(f.Path), searchLower) {
-			continue
+			return true
 		}
 
-		// Calculate inactivity in days using the latest interaction (max of modTime and accessTime)
 		lastInteraction := f.ModTime
 		if f.AccessTime > lastInteraction {
 			lastInteraction = f.AccessTime
 		}
 
 		if lastInteraction <= 0 {
-			continue
+			return true
 		}
 
 		diffSeconds := nowUnix - lastInteraction
@@ -108,26 +116,52 @@ func QueryIdleFiles(allFiles []*scanner.FileNode, minAgeDays int, minSizeBytes i
 				CreateTime:   f.CreateTime,
 				AccessTime:   f.AccessTime,
 				DaysInactive: daysInactive,
+				InactiveDays: daysInactive,
 				Extension:    f.Extension,
 			})
 			totalBytes += f.Size
 		}
-	}
-
-	// Sort by size descending (largest idle files first to reclaim maximum storage)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Size > candidates[j].Size
+		return true
 	})
 
-	top := candidates
-	if len(top) > limit {
-		top = top[:limit]
+	// Sorting
+	switch sortBy {
+	case "days_desc":
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].DaysInactive > candidates[j].DaysInactive
+		})
+	case "name_asc":
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Name < candidates[j].Name
+		})
+	case "size_desc":
+		fallthrough
+	default:
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Size > candidates[j].Size
+		})
 	}
 
+	totalCount := len(candidates)
+	start := offset
+	if start > totalCount {
+		start = totalCount
+	}
+	end := totalCount
+	if limit > 0 && start+limit < end {
+		end = start + limit
+	}
+
+	paginated := candidates[start:end]
+
 	return IdleFilesSummary{
-		TotalIdleFiles: len(candidates),
+		TotalIdleFiles: totalCount,
 		TotalIdleBytes: totalBytes,
 		Buckets:        buckets,
-		TopFiles:       top,
+		AgeBuckets:     buckets,
+		TopFiles:       paginated,
+		Offset:         start,
+		Limit:          limit,
 	}
 }
+

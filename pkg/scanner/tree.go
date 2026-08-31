@@ -417,14 +417,111 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		sort.Slice(subDirs, func(i, j int) bool {
 			return subDirs[i].TotalSize > subDirs[j].TotalSize
 		})
-		// Cap subdirs per folder to top 100 largest subfolders to keep UI instantly snappy
-		if len(subDirs) > 100 {
-			subDirs = subDirs[:100]
+		// Cap subdirs: allow up to 500 for the direct folder (depth 1), and 50 for deeper levels to keep treemap snappy
+		maxSubDirs := 50
+		if currentDepth == 1 {
+			maxSubDirs = 500
+		}
+		if len(subDirs) > maxSubDirs {
+			subDirs = subDirs[:maxSubDirs]
 		}
 		summary.SubDirs = subDirs
 	}
 
 	return summary
+}
+
+// ExtensionStatResult aggregates count and size per file extension.
+type ExtensionStatResult struct {
+	Extension  string  `json:"extension"`
+	TotalBytes int64   `json:"totalBytes"`
+	FileCount  int     `json:"fileCount"`
+	Percentage float64 `json:"percentage"`
+}
+
+// AggregateExtensionStats computes file extension statistics directly on the tree in a single pass without copying 50M pointers.
+func (tm *TreeManager) AggregateExtensionStats() []*ExtensionStatResult {
+	extMap := make(map[string]*ExtensionStatResult)
+	var grandTotalBytes int64
+
+	tm.IterateFiles(func(f *FileNode) bool {
+		ext := strings.ToLower(f.Extension)
+		if ext == "" {
+			ext = "(sem extensão)"
+		}
+		st, ok := extMap[ext]
+		if !ok {
+			st = &ExtensionStatResult{Extension: ext}
+			extMap[ext] = st
+		}
+		st.TotalBytes += f.Size
+		st.FileCount++
+		grandTotalBytes += f.Size
+		return true
+	})
+
+	var statsList []*ExtensionStatResult
+	for _, st := range extMap {
+		if grandTotalBytes > 0 {
+			st.Percentage = (float64(st.TotalBytes) / float64(grandTotalBytes)) * 100.0
+		}
+		statsList = append(statsList, st)
+	}
+
+	sort.Slice(statsList, func(i, j int) bool {
+		return statsList[i].TotalBytes > statsList[j].TotalBytes
+	})
+
+	if len(statsList) > 50 {
+		statsList = statsList[:50]
+	}
+
+	return statsList
+}
+
+// IterateFiles walks all files in the tree, executing fn for each. If fn returns false, iteration stops.
+func (tm *TreeManager) IterateFiles(fn func(f *FileNode) bool) {
+	tm.mu.RLock()
+	roots := make([]*DirNode, 0, len(tm.Roots))
+	for _, r := range tm.Roots {
+		roots = append(roots, r)
+	}
+	tm.mu.RUnlock()
+
+	for _, r := range roots {
+		if !iterateNodeFiles(r, fn) {
+			return
+		}
+	}
+}
+
+func iterateNodeFiles(node *DirNode, fn func(f *FileNode) bool) bool {
+	if node == nil {
+		return true
+	}
+
+	node.mu.RLock()
+	files := make([]*FileNode, len(node.Files))
+	copy(files, node.Files)
+	children := make([]*DirNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		children = append(children, child)
+	}
+	node.mu.RUnlock()
+
+	for _, f := range files {
+		if !fn(f) {
+			return false
+		}
+	}
+
+	for _, child := range children {
+		if !iterateNodeFiles(child, fn) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // GetAllFiles collects all FileNodes from all roots in the tree.
@@ -442,6 +539,7 @@ func (tm *TreeManager) GetAllFiles() []*FileNode {
 	}
 	return allFiles
 }
+
 
 func (tm *TreeManager) collectFiles(node *DirNode, list *[]*FileNode) {
 	if node == nil {

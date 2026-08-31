@@ -9,12 +9,14 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"scanfile/pkg/ai"
 	"scanfile/pkg/config"
@@ -203,6 +205,7 @@ func (s *AppServer) Start(port int) (string, error) {
 	// System Privilege & UAC Elevation Routes
 	mux.HandleFunc("/api/system/privileges", s.handleGetPrivileges)
 	mux.HandleFunc("/api/system/elevate", s.handleElevateProcess)
+	mux.HandleFunc("/api/system/memory", s.handleGetMemoryStats)
 
 	// Cache Persistence & AutoSave Routes
 	mux.HandleFunc("/api/cache/save", s.handleSaveCache)
@@ -905,8 +908,64 @@ func (s *AppServer) handleCancelScan(w http.ResponseWriter, r *http.Request) {
 
 func (s *AppServer) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	st := s.Scanner.GetStatus()
+	st.MemoryStats = GetLiveMemoryStats()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(st)
+}
+
+func (s *AppServer) handleGetMemoryStats(w http.ResponseWriter, r *http.Request) {
+	stats := GetLiveMemoryStats()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+// GetLiveMemoryStats gathers process memory and host OS RAM utilization.
+func GetLiveMemoryStats() *scanner.MemoryStatsPayload {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	payload := &scanner.MemoryStatsPayload{
+		AllocMB:      m.Alloc / (1024 * 1024),
+		TotalAllocMB: m.TotalAlloc / (1024 * 1024),
+		SysMB:        m.Sys / (1024 * 1024),
+		NumGC:        m.NumGC,
+		Goroutines:   runtime.NumGoroutine(),
+	}
+
+	getSystemPhysicalMemory(payload, m.Alloc)
+	return payload
+}
+
+func getSystemPhysicalMemory(payload *scanner.MemoryStatsPayload, allocBytes uint64) {
+	if runtime.GOOS == "windows" {
+		type memoryStatusEx struct {
+			cbSize                  uint32
+			dwMemoryLoad            uint32
+			ullTotalPhys            uint64
+			ullAvailPhys            uint64
+			ullTotalPageFile        uint64
+			ullAvailPageFile        uint64
+			ullTotalVirtual         uint64
+			ullAvailVirtual         uint64
+			ullAvailExtendedVirtual uint64
+		}
+		var stat memoryStatusEx
+		stat.cbSize = uint32(unsafe.Sizeof(stat))
+		kernel32 := syscall.NewLazyDLL("kernel32.dll")
+		globalMemoryStatusEx := kernel32.NewProc("GlobalMemoryStatusEx")
+		ret, _, _ := globalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&stat)))
+		if ret != 0 && stat.ullTotalPhys > 0 {
+			payload.SystemTotalRAMMB = stat.ullTotalPhys / (1024 * 1024)
+			payload.SystemFreeRAMMB = stat.ullAvailPhys / (1024 * 1024)
+			if stat.ullTotalPhys >= stat.ullAvailPhys {
+				payload.SystemUsedRAMMB = (stat.ullTotalPhys - stat.ullAvailPhys) / (1024 * 1024)
+			}
+			payload.SystemPercent = float64(stat.dwMemoryLoad)
+			if stat.ullTotalPhys > 0 {
+				payload.AppPercentOfSys = (float64(allocBytes) / float64(stat.ullTotalPhys)) * 100.0
+			}
+		}
+	}
 }
 
 func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
@@ -969,7 +1028,7 @@ func (s *AppServer) handleGetDuplicates(w http.ResponseWriter, r *http.Request) 
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
 	if limit <= 0 {
-		limit = 100 // Safe default
+		limit = 50 // Safe default
 	} else if limit > 500 {
 		limit = 500
 	}
@@ -995,69 +1054,29 @@ func (s *AppServer) handleGetDuplicates(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(res)
 }
 
-// handleGetIdleFiles finds stale/unused files taking up disk space
+// handleGetIdleFiles finds stale/unused files taking up disk space with in-place streaming
 func (s *AppServer) handleGetIdleFiles(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	minAgeDays, _ := strconv.Atoi(q.Get("minAgeDays"))
 	minSize, _ := strconv.ParseInt(q.Get("minSize"), 10, 64)
 	ext := q.Get("extension")
 	search := q.Get("search")
+	sortBy := q.Get("sortBy")
+	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 
-	allFiles := s.Tree.GetAllFiles()
-	summary := indexer.QueryIdleFiles(allFiles, minAgeDays, minSize, ext, search, limit)
+	summary := indexer.QueryIdleFilesStreaming(s.Tree, minAgeDays, minSize, ext, search, sortBy, offset, limit)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
 }
 
-// ExtensionStat aggregates count and size per file extension.
-type ExtensionStat struct {
-	Extension  string  `json:"extension"`
-	TotalBytes int64   `json:"totalBytes"`
-	FileCount  int     `json:"fileCount"`
-	Percentage float64 `json:"percentage"`
-}
-
 func (s *AppServer) handleGetExtensionStats(w http.ResponseWriter, r *http.Request) {
-	allFiles := s.Tree.GetAllFiles()
-	extMap := make(map[string]*ExtensionStat)
-	var grandTotalBytes int64
-
-	for _, f := range allFiles {
-		ext := strings.ToLower(f.Extension)
-		if ext == "" {
-			ext = "(sem extensão)"
-		}
-		st, ok := extMap[ext]
-		if !ok {
-			st = &ExtensionStat{Extension: ext}
-			extMap[ext] = st
-		}
-		st.TotalBytes += f.Size
-		st.FileCount++
-		grandTotalBytes += f.Size
-	}
-
-	var statsList []*ExtensionStat
-	for _, st := range extMap {
-		if grandTotalBytes > 0 {
-			st.Percentage = (float64(st.TotalBytes) / float64(grandTotalBytes)) * 100.0
-		}
-		statsList = append(statsList, st)
-	}
-
-	sort.Slice(statsList, func(i, j int) bool {
-		return statsList[i].TotalBytes > statsList[j].TotalBytes
-	})
-
-	if len(statsList) > 20 {
-		statsList = statsList[:20]
-	}
-
+	statsList := s.Tree.AggregateExtensionStats()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(statsList)
 }
+
 
 type BatchFileReq struct {
 	Paths []string `json:"paths"`

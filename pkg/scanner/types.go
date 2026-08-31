@@ -137,9 +137,24 @@ type ScanStatus struct {
 	NewFilesCount              int64          `json:"newFilesCount,omitempty"`
 	LastAutoSaveTime           int64          `json:"lastAutoSaveTime,omitempty"`
 	AutoSaveFilePath           string         `json:"autoSaveFilePath,omitempty"`
-	ActiveWorkers              []ActiveWorker `json:"activeWorkers,omitempty"`
-	RecentFiles                []FileLogEntry `json:"recentFiles,omitempty"`
-	ErrorsCount                int            `json:"errorsCount"`
+	ActiveWorkers              []ActiveWorker      `json:"activeWorkers,omitempty"`
+	RecentFiles                []FileLogEntry      `json:"recentFiles,omitempty"`
+	ErrorsCount                int                 `json:"errorsCount"`
+	MemoryStats                *MemoryStatsPayload `json:"memoryStats,omitempty"`
+}
+
+// MemoryStatsPayload holds process and host OS RAM utilization metrics.
+type MemoryStatsPayload struct {
+	AllocMB          uint64  `json:"allocMB"`          // RAM in use by Go app (Alloc)
+	TotalAllocMB     uint64  `json:"totalAllocMB"`     // Cumulative RAM allocated
+	SysMB            uint64  `json:"sysMB"`            // RAM obtained from OS (Heap Sys)
+	NumGC            uint32  `json:"numGC"`            // Number of GC runs completed
+	Goroutines       int     `json:"goroutines"`       // Current active goroutines
+	SystemTotalRAMMB uint64  `json:"systemTotalRAMMB"` // Total Physical RAM installed in host
+	SystemUsedRAMMB  uint64  `json:"systemUsedRAMMB"`  // Used Physical RAM in host
+	SystemFreeRAMMB  uint64  `json:"systemFreeRAMMB"`  // Available/Free Physical RAM in host
+	SystemPercent    float64 `json:"systemPercent"`    // % of Host RAM utilized
+	AppPercentOfSys  float64 `json:"appPercentOfSys"`  // % of Host RAM used by this process
 }
 
 // FSEventLog represents a real-time OS file change event.
@@ -149,3 +164,4 @@ type FSEventLog struct {
 	Path      string    `json:"path"`
 	SizeDelta int64     `json:"sizeDelta"`
 }
+

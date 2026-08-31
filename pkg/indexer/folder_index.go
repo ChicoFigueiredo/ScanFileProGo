@@ -49,18 +49,18 @@ func NewFolderDuplicateIndex() *FolderDuplicateIndex {
 	}
 }
 
-// RebuildFolderIndex traverses the tree and identifies identical duplicate folders.
+// RebuildFolderIndex traverses the tree in a single bottom-up pass and identifies identical duplicate folders.
 func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 	fidx.mu.Lock()
 	defer fidx.mu.Unlock()
 
 	fidx.groups = make(map[string]*DuplicateFolderGroup)
 
-	// Step 1: Collect all directories with >= 1 file
+	// Step 1: Collect folder summaries using a single-pass post-order bottom-up Merkle traversal O(N)
 	var summaries []*FolderSummary
 	tm.RootsLock(func(roots map[string]*scanner.DirNode) {
 		for _, r := range roots {
-			collectFolderSummaries(r, tm, &summaries)
+			computeAndCollectFolderMerkle(r, &summaries)
 		}
 	})
 
@@ -106,114 +106,112 @@ func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 		}
 	}
 
-	// Step 4: Detect hierarchy (IsTopLevel vs Sub-Duplicate)
-	type pathGroupRef struct {
-		path  string
-		group *DuplicateFolderGroup
-	}
-	var allPathRefs []pathGroupRef
+	// Step 4: Detect hierarchy (IsTopLevel vs Sub-Duplicate) in O(N * Depth) via fast path map lookup
+	pathGroupMap := make(map[string]*DuplicateFolderGroup, len(fidx.groups)*2)
 	for _, grp := range fidx.groups {
 		grp.IsTopLevel = true
 		for _, f := range grp.Folders {
 			normPath := strings.ToLower(filepath.Clean(f.Path))
-			allPathRefs = append(allPathRefs, pathGroupRef{path: normPath, group: grp})
+			pathGroupMap[normPath] = grp
 		}
 	}
 
-	// Sort path references by path length ascending (shorter paths are ancestors/parents)
-	sort.Slice(allPathRefs, func(i, j int) bool {
-		return len(allPathRefs[i].path) < len(allPathRefs[j].path)
-	})
-
-	for _, childRef := range allPathRefs {
-		childPath := childRef.path
-		for _, parentRef := range allPathRefs {
-			if parentRef.group.ID == childRef.group.ID {
-				continue
-			}
-			parentPath := parentRef.path
-			if len(childPath) > len(parentPath) && strings.HasPrefix(childPath, parentPath+string(filepath.Separator)) {
-				childRef.group.IsTopLevel = false
-				childRef.group.ParentGroupID = parentRef.group.ID
+	for path, grp := range pathGroupMap {
+		curr := path
+		for {
+			parent := filepath.Dir(curr)
+			if parent == curr || parent == "." || parent == "" {
 				break
 			}
+			if parentGrp, exists := pathGroupMap[parent]; exists && parentGrp.ID != grp.ID {
+				grp.IsTopLevel = false
+				grp.ParentGroupID = parentGrp.ID
+				break
+			}
+			curr = parent
 		}
 	}
 }
 
-func collectFolderSummaries(node *scanner.DirNode, tm *scanner.TreeManager, list *[]*FolderSummary) {
-	nodePath, nodeName, totalSize, fileCount, subDirCount, modTime := node.GetInfo()
-	children := node.GetChildren()
-
-	// Compute FolderContentHash for this directory
-	if fileCount > 0 {
-		hash := ComputeFolderContentHash(node)
-		*list = append(*list, &FolderSummary{
-			Path:              nodePath,
-			Name:              nodeName,
-			TotalSize:         totalSize,
-			FileCount:         fileCount,
-			SubDirCount:       subDirCount,
-			FolderContentHash: hash,
-			ModTime:           modTime,
-		})
-	}
-
-	for _, child := range children {
-		collectFolderSummaries(child, tm, list)
-	}
-}
-
-// ComputeFolderContentHash computes a deterministic content-based Merkle hash for a folder subtree.
-// It sorts all relative paths and hashes their relative path, size, and content hash.
-func ComputeFolderContentHash(dirNode *scanner.DirNode) string {
-	files := dirNode.GetAllFiles()
-
-	if len(files) == 0 {
+// computeAndCollectFolderMerkle computes Merkle hash bottom-up in O(N) single pass and collects summaries.
+func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary) string {
+	if node == nil {
 		return ""
 	}
 
-	// Prepare relative path fingerprints
-	nodePath, _, _, _, _, _ := dirNode.GetInfo()
-	type fileEntry struct {
-		relPath string
-		size    int64
-		hash    string
+	nodePath, nodeName, totalSize, fileCount, subDirCount, modTime := node.GetInfo()
+	children := node.GetChildren()
+
+	// Child Merkle hashes collected bottom-up
+	type childHashEntry struct {
+		name string
+		hash string
+	}
+	childHashes := make([]childHashEntry, 0, len(children))
+	for _, child := range children {
+		cHash := computeAndCollectFolderMerkle(child, list)
+		if cHash != "" {
+			childHashes = append(childHashes, childHashEntry{name: child.Name, hash: cHash})
+		}
 	}
 
-	entries := make([]fileEntry, 0, len(files))
-	for _, f := range files {
-		rel, err := filepath.Rel(nodePath, f.Path)
-		if err != nil {
-			rel = f.Name
-		}
-		// Normalize separators
-		rel = strings.ReplaceAll(rel, "\\", "/")
+	if fileCount == 0 {
+		return ""
+	}
 
+	// Hash direct files of this node
+	var directFiles []*scanner.FileNode
+	node.RLock(func() {
+		directFiles = make([]*scanner.FileNode, len(node.Files))
+		copy(directFiles, node.Files)
+	})
+
+	hasher := xxhash.New()
+
+	// Sort direct files deterministically by Name
+	sort.Slice(directFiles, func(i, j int) bool {
+		return directFiles[i].Name < directFiles[j].Name
+	})
+	for _, f := range directFiles {
 		h := f.Hash
 		if h == "" {
 			h = fmt.Sprintf("sz:%d|mt:%d", f.Size, f.ModTime)
 		}
-
-		entries = append(entries, fileEntry{
-			relPath: rel,
-			size:    f.Size,
-			hash:    h,
-		})
+		_, _ = hasher.WriteString(fmt.Sprintf("F|%s|%d|%s\n", f.Name, f.Size, h))
 	}
 
-	// Sort deterministically by relative path
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].relPath < entries[j].relPath
+	// Sort subdirectories deterministically by Name
+	sort.Slice(childHashes, func(i, j int) bool {
+		return childHashes[i].name < childHashes[j].name
+	})
+	for _, ch := range childHashes {
+		_, _ = hasher.WriteString(fmt.Sprintf("D|%s|%s\n", ch.name, ch.hash))
+	}
+
+	contentHash := fmt.Sprintf("dir_xxh64:%016x", hasher.Sum64())
+
+	*list = append(*list, &FolderSummary{
+		Path:              nodePath,
+		Name:              nodeName,
+		TotalSize:         totalSize,
+		FileCount:         fileCount,
+		SubDirCount:       subDirCount,
+		FolderContentHash: contentHash,
+		ModTime:           modTime,
 	})
 
-	hasher := xxhash.New()
-	for _, e := range entries {
-		_, _ = hasher.WriteString(fmt.Sprintf("%s|%d|%s\n", e.relPath, e.size, e.hash))
-	}
-
-	return fmt.Sprintf("dir_xxh64:%016x", hasher.Sum64())
+	return contentHash
 }
+
+// ComputeFolderContentHash computes a deterministic content-based Merkle hash for a folder subtree.
+func ComputeFolderContentHash(dirNode *scanner.DirNode) string {
+	if dirNode == nil {
+		return ""
+	}
+	var dummyList []*FolderSummary
+	return computeAndCollectFolderMerkle(dirNode, &dummyList)
+}
+
 
 // FolderQueryFilter options for duplicate folder searches.
 type FolderQueryFilter struct {
