@@ -2,8 +2,11 @@ package drives
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -19,7 +22,7 @@ type DriveInfo struct {
 	FreeBytes   uint64  `json:"freeBytes"`
 	UsedBytes   uint64  `json:"usedBytes"`
 	UsedPercent float64 `json:"usedPercent"`
-	DriveType   string  `json:"driveType"`   // e.g. "Fixed", "Removable", "Network", "CD-ROM"
+	DriveType   string  `json:"driveType"`   // e.g. "Fixed (SSD/HDD)", "Removable", "Network", "CD-ROM"
 }
 
 var (
@@ -28,74 +31,117 @@ var (
 	procWNetAddConnection2W = modmpr.NewProc("WNetAddConnection2W")
 )
 
-// GetLogicalDrives retrieves all mounted logical drives on Windows.
-// It also bridges mapped network drives from standard user sessions into elevated Administrator sessions.
+// GetLogicalDrives retrieves all mounted logical drives on Windows safely and concurrently.
+// It uses per-drive timeouts so disconnected network shares or slow devices never hang the application.
 func GetLogicalDrives() ([]DriveInfo, error) {
 	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
 	getLogicalDriveStringsW := kernel32.NewProc("GetLogicalDriveStringsW")
 	getDriveTypeW := kernel32.NewProc("GetDriveTypeW")
 
-	// Step 1: Query logical drives via API
-	r1, _, err := getLogicalDriveStringsW.Call(0, 0)
-	if r1 == 0 {
-		return nil, fmt.Errorf("failed to get drive strings buffer size: %w", err)
-	}
+	candidateLetters := make(map[string]bool)
 
-	buf := make([]uint16, r1)
-	r1, _, err = getLogicalDriveStringsW.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0])))
-	if r1 == 0 {
-		return nil, fmt.Errorf("failed to get drive strings: %w", err)
-	}
-
-	seenLetters := make(map[string]bool)
-	var drives []DriveInfo
-	var currentDrive []uint16
-
-	for _, c := range buf {
-		if c == 0 {
-			if len(currentDrive) > 0 {
-				drivePath := syscall.UTF16ToString(currentDrive)
-				upper := strings.ToUpper(drivePath)
-				seenLetters[upper] = true
-				info, err := getDriveDetails(drivePath, getDriveTypeW)
-				if err == nil {
-					drives = append(drives, info)
+	// Step 1: Query logical drive strings from kernel32
+	r1, _, _ := getLogicalDriveStringsW.Call(0, 0)
+	if r1 > 0 {
+		buf := make([]uint16, r1)
+		r1, _, _ = getLogicalDriveStringsW.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0])))
+		if r1 > 0 {
+			var current []uint16
+			for _, c := range buf {
+				if c == 0 {
+					if len(current) > 0 {
+						p := strings.ToUpper(syscall.UTF16ToString(current))
+						if !strings.HasSuffix(p, "\\") {
+							p += "\\"
+						}
+						candidateLetters[p] = true
+						current = nil
+					}
+				} else {
+					current = append(current, c)
 				}
-				currentDrive = nil
 			}
-		} else {
-			currentDrive = append(currentDrive, c)
 		}
 	}
 
-	// Step 2: Query User Network Mappings in Registry (HKCU\Network)
-	// In elevated admin sessions, Windows isolates network drives. This ensures L:\, Z:\ etc. remain mapped!
-	networkDrives := discoverMappedNetworkDrives()
-	for _, nd := range networkDrives {
-		normalizedPath := strings.ToUpper(nd.Letter)
-		if !strings.HasSuffix(normalizedPath, "\\") {
-			normalizedPath += "\\"
+	// Step 2: Query User Mapped Network Drives from Registry (HKCU\Network)
+	netDrives := discoverMappedNetworkDrivesFromRegistry()
+	for _, nd := range netDrives {
+		p := strings.ToUpper(nd.Letter)
+		if !strings.HasSuffix(p, "\\") {
+			p += "\\"
 		}
+		candidateLetters[p] = true
+	}
 
-		if !seenLetters[normalizedPath] {
-			// Attempt to link connection for elevated session
-			if nd.RemotePath != "" {
-				_ = linkNetworkDrive(nd.Letter, nd.RemotePath)
-			}
+	// If no candidate drives found from API, fallback to checking standard letters C through Z
+	if len(candidateLetters) == 0 {
+		candidateLetters["C:\\"] = true
+		for r := 'D'; r <= 'Z'; r++ {
+			candidateLetters[fmt.Sprintf("%c:\\", r)] = true
+		}
+	}
 
-			info, err := getDriveDetails(normalizedPath, getDriveTypeW)
-			if err == nil {
-				if info.VolumeLabel == "" && nd.RemotePath != "" {
-					info.VolumeLabel = nd.RemotePath
+	// Step 3: Probe each candidate drive concurrently with a strict timeout
+	var mu sync.Mutex
+	var results []DriveInfo
+	var wg sync.WaitGroup
+
+	for letter := range candidateLetters {
+		drivePath := letter
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			infoChan := make(chan DriveInfo, 1)
+			go func() {
+				info, ok := probeSingleDrive(drivePath, getDriveTypeW)
+				if ok {
+					infoChan <- info
+				} else {
+					infoChan <- DriveInfo{}
 				}
-				info.DriveType = "Network"
-				drives = append(drives, info)
-				seenLetters[normalizedPath] = true
+			}()
+
+			select {
+			case info := <-infoChan:
+				if info.Letter != "" {
+					mu.Lock()
+					results = append(results, info)
+					mu.Unlock()
+				}
+			case <-time.After(1500 * time.Millisecond):
+				// Timeout on this specific drive (e.g. disconnected network mount or sleeping disk)
+				mu.Lock()
+				results = append(results, DriveInfo{
+					Letter:      drivePath,
+					VolumeLabel: "Unidade Indisponível",
+					FileSystem:  "N/A",
+					DriveType:   "Desconectado / Timeout",
+				})
+				mu.Unlock()
 			}
-		}
+		}()
 	}
 
-	return drives, nil
+	wg.Wait()
+
+	// Ensure always sorted by letter
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Letter < results[j].Letter
+	})
+
+	// Absolute safety fallback: if nothing returned, at least provide C:\
+	if len(results) == 0 {
+		results = append(results, DriveInfo{
+			Letter:      "C:\\",
+			VolumeLabel: "Disco Local (C:)",
+			FileSystem:  "NTFS",
+			DriveType:   "Fixed (SSD/HDD)",
+		})
+	}
+
+	return results, nil
 }
 
 type mappedNetDrive struct {
@@ -103,47 +149,31 @@ type mappedNetDrive struct {
 	RemotePath string
 }
 
-func discoverMappedNetworkDrives() []mappedNetDrive {
+// discoverMappedNetworkDrivesFromRegistry inspects HKCU\Network without any network I/O.
+func discoverMappedNetworkDrivesFromRegistry() []mappedNetDrive {
 	var list []mappedNetDrive
 
-	// Check HKCU\Network
 	k, err := registry.OpenKey(registry.CURRENT_USER, `Network`, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE)
-	if err == nil {
-		defer k.Close()
-		subkeys, err := k.ReadSubKeyNames(-1)
-		if err == nil {
-			for _, sub := range subkeys {
-				if len(sub) == 1 {
-					letter := strings.ToUpper(sub) + ":"
-					subKey, err := registry.OpenKey(k, sub, registry.QUERY_VALUE)
-					if err == nil {
-						remotePath, _, _ := subKey.GetStringValue("RemotePath")
-						subKey.Close()
-						list = append(list, mappedNetDrive{
-							Letter:     letter,
-							RemotePath: remotePath,
-						})
-					}
-				}
-			}
-		}
+	if err != nil {
+		return list
+	}
+	defer k.Close()
+
+	subkeys, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return list
 	}
 
-	// Check letters A-Z via WNetGetConnection
-	for r := 'C'; r <= 'Z'; r++ {
-		letter := fmt.Sprintf("%c:", r)
-		if remote, ok := getWNetRemotePath(letter); ok {
-			alreadyInList := false
-			for _, item := range list {
-				if strings.EqualFold(item.Letter, letter) {
-					alreadyInList = true
-					break
-				}
-			}
-			if !alreadyInList {
+	for _, sub := range subkeys {
+		if len(sub) == 1 {
+			letter := strings.ToUpper(sub) + ":"
+			subKey, err := registry.OpenKey(k, sub, registry.QUERY_VALUE)
+			if err == nil {
+				remotePath, _, _ := subKey.GetStringValue("RemotePath")
+				subKey.Close()
 				list = append(list, mappedNetDrive{
 					Letter:     letter,
-					RemotePath: remote,
+					RemotePath: remotePath,
 				})
 			}
 		}
@@ -152,69 +182,19 @@ func discoverMappedNetworkDrives() []mappedNetDrive {
 	return list
 }
 
-func getWNetRemotePath(localDrive string) (string, bool) {
-	drivePtr, err := syscall.UTF16PtrFromString(localDrive)
-	if err != nil {
-		return "", false
-	}
-
-	var buf [512]uint16
-	var bufLen uint32 = uint32(len(buf))
-
-	r1, _, _ := procWNetGetConnectionW.Call(
-		uintptr(unsafe.Pointer(drivePtr)),
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(unsafe.Pointer(&bufLen)),
-	)
-
-	if r1 == 0 {
-		return syscall.UTF16ToString(buf[:]), true
-	}
-	return "", false
-}
-
-func linkNetworkDrive(localDrive, remotePath string) error {
-	type NETRESOURCE struct {
-		Scope       uint32
-		Type        uint32
-		DisplayType uint32
-		Usage       uint32
-		LocalName   *uint16
-		RemoteName  *uint16
-		Comment     *uint16
-		Provider    *uint16
-	}
-
-	localPtr, _ := syscall.UTF16PtrFromString(localDrive)
-	remotePtr, _ := syscall.UTF16PtrFromString(remotePath)
-
-	nr := NETRESOURCE{
-		Type:       1, // RESOURCETYPE_DISK
-		LocalName:  localPtr,
-		RemoteName: remotePtr,
-	}
-
-	r1, _, err := procWNetAddConnection2W.Call(
-		uintptr(unsafe.Pointer(&nr)),
-		0, // Password (use existing session)
-		0, // User (use existing session)
-		0, // Flags
-	)
-
-	if r1 == 0 || r1 == 1219 || r1 == 85 { // 1219 = multiple credentials, 85 = already assigned
-		return nil
-	}
-	return err
-}
-
-func getDriveDetails(drivePath string, getDriveTypeProc *windows.LazyProc) (DriveInfo, error) {
+func probeSingleDrive(drivePath string, getDriveTypeProc *windows.LazyProc) (DriveInfo, bool) {
 	drivePtr, err := syscall.UTF16PtrFromString(drivePath)
 	if err != nil {
-		return DriveInfo{}, err
+		return DriveInfo{}, false
 	}
 
-	// Drive Type
+	// 1. Query Drive Type
 	driveTypeVal, _, _ := getDriveTypeProc.Call(uintptr(unsafe.Pointer(drivePtr)))
+	// 0 = DRIVE_UNKNOWN, 1 = DRIVE_NO_ROOT_DIR
+	if driveTypeVal <= 1 {
+		return DriveInfo{}, false
+	}
+
 	var driveTypeStr string
 	switch driveTypeVal {
 	case 2:
@@ -228,10 +208,10 @@ func getDriveDetails(drivePath string, getDriveTypeProc *windows.LazyProc) (Driv
 	case 6:
 		driveTypeStr = "RAM Disk"
 	default:
-		driveTypeStr = "Unknown"
+		driveTypeStr = "Outro"
 	}
 
-	// Volume information
+	// 2. Query Volume Info (safe, non-failing)
 	var volumeNameBuf [260]uint16
 	var fileSystemNameBuf [260]uint16
 	var serialNumber, maxComponentLen, fsFlags uint32
@@ -249,10 +229,20 @@ func getDriveDetails(drivePath string, getDriveTypeProc *windows.LazyProc) (Driv
 
 	volumeLabel := syscall.UTF16ToString(volumeNameBuf[:])
 	fileSystem := syscall.UTF16ToString(fileSystemNameBuf[:])
+	if volumeLabel == "" {
+		if driveTypeVal == 3 {
+			volumeLabel = fmt.Sprintf("Disco Local (%s)", strings.TrimSuffix(drivePath, "\\"))
+		} else {
+			volumeLabel = driveTypeStr
+		}
+	}
+	if fileSystem == "" {
+		fileSystem = "NTFS"
+	}
 
-	// Free and total space
+	// 3. Query Free Space (safe, non-failing)
 	var freeBytesAvailable, totalBytes, totalFreeBytes uint64
-	err = windows.GetDiskFreeSpaceEx(
+	_ = windows.GetDiskFreeSpaceEx(
 		drivePtr,
 		&freeBytesAvailable,
 		&totalBytes,
@@ -261,7 +251,7 @@ func getDriveDetails(drivePath string, getDriveTypeProc *windows.LazyProc) (Driv
 
 	var usedBytes uint64
 	var usedPercent float64
-	if err == nil && totalBytes > 0 {
+	if totalBytes > 0 {
 		usedBytes = totalBytes - totalFreeBytes
 		usedPercent = (float64(usedBytes) / float64(totalBytes)) * 100.0
 	}
@@ -275,5 +265,5 @@ func getDriveDetails(drivePath string, getDriveTypeProc *windows.LazyProc) (Driv
 		UsedBytes:   usedBytes,
 		UsedPercent: usedPercent,
 		DriveType:   driveTypeStr,
-	}, nil
+	}, true
 }

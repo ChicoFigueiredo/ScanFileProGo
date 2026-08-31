@@ -9,125 +9,167 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
-<body class="dark-theme">
-  <!-- Top Navigation / App Header -->
+<body class="dark-theme">  <!-- Top Navigation / App Header -->
   <header class="app-header">
-    <div class="header-brand">
-      <div class="brand-logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-          <line x1="12" y1="11" x2="12" y2="17"></line>
-          <line x1="9" y1="14" x2="15" y2="14"></line>
-        </svg>
-      </div>
-      <div class="brand-title">
-        <h1>ScanFile <span>Pro</span></h1>
-        <p class="subtitle">Analisador de Disco Multithread & Deduplicação por Hash</p>
-      </div>
-    </div>
-
-    <!-- Cache Management, Privilege & Live Status -->
-    <div class="header-status-group">
-      <!-- Theme Switcher -->
-      <div class="theme-switcher-wrap" title="Esquema Visual e Tema da Aplicação">
-        <select id="themeSelector" class="form-select form-select-sm theme-select">
-          <option value="ochre-dark" selected>🍂 Ocre Noturno</option>
-          <option value="ochre-light">🏜️ Ocre Areia Dourada</option>
-          <option value="obsidian">🌌 Obsidian Dark</option>
-        </select>
-      </div>
-
-      <!-- Realtime Memory Telemetry Status Widget -->
-      <div id="memoryStatusWidget" class="memory-status-widget" title="Telemetria de Memória RAM em Tempo Real (Processo vs Sistema Operacional)">
-        <div class="memory-widget-icon">⚡</div>
-        <div class="memory-widget-info">
-          <div class="memory-widget-header">
-            <span class="memory-label">RAM App: <strong id="memAppUsage">0 MB</strong></span>
-            <span class="memory-sublabel" id="memSysUsage">SO: 0 / 0 GB (0%)</span>
+    <div class="header-top-row">
+      <!-- Brand Logo and Title -->
+      <div class="header-brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            <line x1="12" y1="11" x2="12" y2="17"></line>
+            <line x1="9" y1="14" x2="15" y2="14"></line>
+          </svg>
+        </div>
+        <div class="brand-title">
+          <div class="brand-title-line">
+            <h1>ScanFile</h1>
+            <span class="pro-badge">PRO</span>
           </div>
-          <div class="memory-track">
-            <div id="memoryBarFill" class="memory-fill" style="width: 0%;"></div>
-          </div>
+          <p class="subtitle">Analisador de Disco Multithread & Deduplicação por Hash</p>
         </div>
       </div>
 
-      <div id="privilegeBadge" class="privilege-badge admin" title="Permissões de Segurança do Windows">
-        <span id="privilegeIcon">👑</span>
-        <span id="privilegeText">Verificando Privilégios...</span>
-        <button id="btnElevateAdmin" class="btn-elevate-admin hidden" title="Reiniciar como Administrador para acesso total">⚡ Elevar</button>
-      </div>
+      <!-- Functional Control Groups -->
+      <div class="header-controls">
+        
+        <!-- Group 1: Telemetria & Status -->
+        <div class="control-group" title="Monitoramento e Permissões do Sistema">
+          <div class="group-label">Sistema & RAM</div>
+          <div class="group-content">
+            <!-- Memory Telemetry Widget -->
+            <div id="memoryStatusWidget" class="memory-status-widget" title="Telemetria de Memória RAM em Tempo Real (Processo vs Sistema Operacional)">
+              <div class="memory-widget-icon">⚡</div>
+              <div class="memory-widget-info">
+                <div class="memory-widget-header">
+                  <span class="memory-label">App: <strong id="memAppUsage">0 MB</strong></span>
+                  <span class="memory-sublabel" id="memSysUsage">SO: 0 / 0 GB (0%)</span>
+                </div>
+                <div class="memory-track">
+                  <div id="memoryBarFill" class="memory-fill" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
 
-      <div class="cache-header-actions">
-        <button id="btnOpenSaveCacheModal" class="btn btn-secondary btn-sm" title="Salvar snapshot da árvore e hashes em disco">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-          Salvar Cache
-        </button>
-        <button id="btnOpenLoadCacheModal" class="btn btn-secondary btn-sm" title="Carregar snapshot salvo de varredura anterior">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-          Carregar Cache
-        </button>
-      </div>
+            <!-- Privilege Badge -->
+            <div id="privilegeBadge" class="privilege-badge admin" title="Permissões de Segurança do Windows">
+              <span id="privilegeIcon">👑</span>
+              <span id="privilegeText">Verificando...</span>
+              <button id="btnElevateAdmin" class="btn-elevate-admin hidden" title="Reiniciar como Administrador para acesso total">⚡ Elevar</button>
+            </div>
 
-      <!-- UI Zoom Controls -->
-      <div class="ui-zoom-controls" title="Controle de Zoom da Interface">
-        <button id="btnZoomOut" class="btn-zoom" title="Diminuir Zoom da Interface">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        </button>
-        <span id="zoomLevelDisplay" class="zoom-display" title="Clique para redefinir para 100%">100%</span>
-        <button id="btnZoomIn" class="btn-zoom" title="Aumentar Zoom da Interface">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        </button>
-      </div>
-
-      <div class="header-status">
-        <div id="liveBadge" class="status-badge idle">
-          <span class="pulse-dot"></span>
-          <span id="liveStatusText">Pronto</span>
+            <!-- Global Status Pill -->
+            <div id="liveBadge" class="status-badge idle">
+              <span class="pulse-dot"></span>
+              <span id="liveStatusText">Pronto</span>
+            </div>
+          </div>
         </div>
+
+        <!-- Group 2: Snapshot & Cache -->
+        <div class="control-group" title="Gerenciamento de Snapshots de Varredura">
+          <div class="group-label">Snapshots</div>
+          <div class="group-content">
+            <button id="btnOpenSaveCacheModal" class="btn btn-secondary btn-sm" title="Salvar snapshot da árvore e hashes em disco">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+              Salvar
+            </button>
+            <button id="btnOpenLoadCacheModal" class="btn btn-secondary btn-sm" title="Carregar snapshot salvo de varredura anterior">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+              Carregar
+            </button>
+          </div>
+        </div>
+
+        <!-- Group 3: Exibição & Zoom -->
+        <div class="control-group" title="Zoom da Interface">
+          <div class="group-label">Zoom</div>
+          <div class="group-content">
+            <div class="ui-zoom-controls">
+              <button id="btnZoomOut" class="btn-zoom" title="Diminuir Zoom">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+              <span id="zoomLevelDisplay" class="zoom-display" title="Clique para redefinir para 100%">100%</span>
+              <button id="btnZoomIn" class="btn-zoom" title="Aumentar Zoom">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 4: Tema Visual -->
+        <div class="control-group" title="Tema Visual">
+          <div class="group-label">Tema</div>
+          <div class="group-content">
+            <select id="themeSelector" class="form-select form-select-sm theme-select">
+              <optgroup label="🍂 Temas Ocres">
+                <option value="theme-ochre-dark" selected>🍂 Ocre Noturno</option>
+                <option value="theme-ochre-sand">🏜️ Ocre Areia Dourada</option>
+                <option value="theme-ochre-terracotta">🏺 Ocre Terracota</option>
+                <option value="theme-ochre-autumn">🍁 Ocre Outono</option>
+              </optgroup>
+              <optgroup label="☀️ Temas Claros">
+                <option value="theme-light-snow">❄️ Claro Neve</option>
+                <option value="theme-light-sand">🏖️ Claro Areia & Linho</option>
+                <option value="theme-light-nordic">🧊 Claro Nórdico</option>
+                <option value="theme-light-paper">📜 Claro Pergaminho</option>
+              </optgroup>
+              <optgroup label="🌌 Temas Escuros (Dark)">
+                <option value="theme-dark-obsidian">🌌 Obsidian Slate</option>
+                <option value="theme-dark-oled">⬛ Midnight OLED</option>
+                <option value="theme-dark-cyber">⚡ Cyber Graphite</option>
+                <option value="theme-dark-dracula">🧛 Dracula Deep</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
       </div>
     </div>
 
-
-    <!-- Navigation Tabs -->
-    <nav class="nav-tabs">
-      <button class="nav-tab active" data-tab="drivesTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
-        Discos & Varredura
-      </button>
-      <button class="nav-tab" data-tab="treeTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-        Gráfico & Árvore
-      </button>
-      <button class="nav-tab" data-tab="duplicatesTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-        Duplicados por Hash
-        <span id="dupCountBadge" class="badge-counter hidden">0</span>
-      </button>
-      <button class="nav-tab" data-tab="foldersTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><path d="M12 11v6"></path><path d="M9 14h6"></path></svg>
-        Comparador de Pastas
-        <span id="folderDupCountBadge" class="badge-counter hidden">0</span>
-      </button>
-      <button class="nav-tab" data-tab="analyticsTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
-        Distribuição
-      </button>
-      <button class="nav-tab" data-tab="idleTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 10"></polyline></svg>
-        Arquivos Ociosos
-      </button>
-      <button class="nav-tab" data-tab="watcherTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-        Monitor do SO
-        <span id="eventCountBadge" class="badge-counter">0</span>
-      </button>
-      <button class="nav-tab ai-tab-btn" data-tab="aiTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path><rect x="3" y="8" width="18" height="12" rx="2"></rect><circle cx="9" cy="13" r="1.5"></circle><circle cx="15" cy="13" r="1.5"></circle><path d="M9 17h6"></path></svg>
-        Assistente IA
-        <span class="badge-ai-mcp">MCP</span>
-      </button>
-    </nav>
+    <!-- Navigation Tabs Row -->
+    <div class="header-nav-row">
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="drivesTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+          Discos & Varredura
+        </button>
+        <button class="nav-tab" data-tab="treeTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          Gráfico & Árvore
+        </button>
+        <button class="nav-tab" data-tab="duplicatesTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          Duplicados por Hash
+          <span id="dupCountBadge" class="badge-counter hidden">0</span>
+        </button>
+        <button class="nav-tab" data-tab="foldersTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><path d="M12 11v6"></path><path d="M9 14h6"></path></svg>
+          Comparador de Pastas
+          <span id="folderDupCountBadge" class="badge-counter hidden">0</span>
+        </button>
+        <button class="nav-tab" data-tab="analyticsTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+          Distribuição
+        </button>
+        <button class="nav-tab" data-tab="idleTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 10"></polyline></svg>
+          Arquivos Ociosos
+        </button>
+        <button class="nav-tab" data-tab="watcherTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+          Monitor do SO
+          <span id="eventCountBadge" class="badge-counter">0</span>
+        </button>
+        <button class="nav-tab ai-tab-btn" data-tab="aiTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path><rect x="3" y="8" width="18" height="12" rx="2"></rect><circle cx="9" cy="13" r="1.5"></circle><circle cx="15" cy="13" r="1.5"></circle><path d="M9 17h6"></path></svg>
+          Assistente IA
+          <span class="badge-ai-mcp">MCP</span>
+        </button>
+      </nav>
+    </div>
   </header>
+
 
   <!-- Main Content Area -->
   <main class="app-main">

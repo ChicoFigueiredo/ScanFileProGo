@@ -351,14 +351,14 @@
   }
 
   // ==========================================
-  // THEME MANAGER & OCHRE TONES
+  // THEME MANAGER (12 THEMES: 4 OCHRE, 4 LIGHT, 4 DARK)
   // ==========================================
   function setupThemeManager() {
-    const savedTheme = localStorage.getItem('scanfile_theme') || 'ochre-dark';
+    const savedTheme = localStorage.getItem('scanfile_theme') || 'theme-ochre-dark';
     applyTheme(savedTheme);
 
     if (elements.themeSelector) {
-      elements.themeSelector.value = savedTheme;
+      elements.themeSelector.value = state.theme || savedTheme;
       elements.themeSelector.addEventListener('change', (e) => {
         const newTheme = e.target.value;
         applyTheme(newTheme);
@@ -368,16 +368,34 @@
   }
 
   function applyTheme(theme) {
-    document.body.classList.remove('theme-ochre-dark', 'theme-ochre-light', 'theme-obsidian', 'dark-theme');
-    if (theme === 'ochre-light') {
-      document.body.classList.add('theme-ochre-light');
-    } else if (theme === 'obsidian') {
-      document.body.classList.add('theme-obsidian');
-    } else {
-      document.body.classList.add('theme-ochre-dark');
-    }
+    if (!theme) theme = 'theme-ochre-dark';
+    // Backwards compatibility mappings
+    if (theme === 'ochre-dark') theme = 'theme-ochre-dark';
+    else if (theme === 'ochre-light') theme = 'theme-ochre-sand';
+    else if (theme === 'obsidian') theme = 'theme-dark-obsidian';
+    else if (!theme.startsWith('theme-')) theme = 'theme-' + theme;
+
+    // Remove any existing theme-* classes from body
+    const classesToRemove = [];
+    document.body.classList.forEach(cls => {
+      if (cls.startsWith('theme-') || cls === 'dark-theme' || cls === 'light-theme') {
+        classesToRemove.push(cls);
+      }
+    });
+    classesToRemove.forEach(cls => document.body.classList.remove(cls));
+
+    document.body.classList.add(theme);
     state.theme = theme;
+
+    if (elements.themeSelector && elements.themeSelector.value !== theme) {
+      elements.themeSelector.value = theme;
+    }
+
+    if (state.currentTab === 'treeTab') {
+      setTimeout(() => resizeTreemapCanvas(), 50);
+    }
   }
+
 
   // ==========================================
   // REALTIME MEMORY TELEMETRY
@@ -939,25 +957,43 @@
 
   // Fetch Drives
   async function fetchDrives() {
+    if (!elements.drivesGrid) return;
     try {
-      elements.drivesGrid.innerHTML = '<div class="loading-state">Carregando informações de discos...</div>';
-      const res = await fetch('/api/drives');
-      if (!res.ok) throw new Error('Falha ao obter discos');
-      state.drives = await res.json();
+      elements.drivesGrid.innerHTML = '<div class="loading-state"><span class="pulse-dot" style="display:inline-block; margin-right:8px;"></span>Detectando unidades de disco do sistema...</div>';
       
-      // Auto-select all fixed drives by default if none selected
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      
+      const res = await fetch('/api/drives', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      if (!res.ok) throw new Error('Falha ao obter discos do servidor.');
+      const data = await res.json();
+      state.drives = Array.isArray(data) ? data : [];
+      
+      // Auto-select all fixed/removable drives by default if none selected
       if (state.selectedRoots.size === 0) {
         state.drives.forEach(d => {
-          if (d.driveType.includes('Fixed') || d.driveType.includes('Removable')) {
+          if ((d.driveType && (d.driveType.includes('Fixed') || d.driveType.includes('Removable'))) || state.drives.length === 1) {
             state.selectedRoots.add(d.letter);
           }
         });
       }
       renderDrivesGrid();
     } catch (err) {
-      elements.drivesGrid.innerHTML = `<div class="empty-state">Erro: ${err.message}</div>`;
+      console.warn('Erro ao obter discos:', err);
+      elements.drivesGrid.innerHTML = `
+        <div class="empty-state" style="padding: 20px; text-align: center;">
+          <p style="color: var(--accent-rose); font-weight: 600; margin-bottom: 6px;">Não foi possível consultar automaticamente as unidades de disco.</p>
+          <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 14px;">${err.message}</p>
+          <button id="btnRetryDrives" class="btn btn-secondary btn-sm" onclick="window.__scanfile_retryDrives && window.__scanfile_retryDrives()">
+            🔄 Tentar Novamente
+          </button>
+        </div>`;
+      window.__scanfile_retryDrives = fetchDrives;
     }
   }
+
 
   // Render Drives Grid
   function renderDrivesGrid() {

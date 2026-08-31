@@ -381,13 +381,20 @@ func (s *AppServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 func (s *AppServer) handleGetDrives(w http.ResponseWriter, r *http.Request) {
 	driveList, err := drives.GetLogicalDrives()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if err != nil || len(driveList) == 0 {
+		driveList = []drives.DriveInfo{
+			{
+				Letter:      "C:\\",
+				VolumeLabel: "Disco Local (C:)",
+				FileSystem:  "NTFS",
+				DriveType:   "Fixed (SSD/HDD)",
+			},
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(driveList)
 }
+
 
 func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
