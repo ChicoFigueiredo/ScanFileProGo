@@ -27,6 +27,19 @@ func (tm *TreeManager) Reset() {
 	tm.Roots = make(map[string]*DirNode)
 }
 
+// GetRootsSnapshot returns a slice copy of the current root nodes under a brief read-lock (Safe from deadlocks).
+func (tm *TreeManager) GetRootsSnapshot() []*DirNode {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	roots := make([]*DirNode, 0, len(tm.Roots))
+	for _, r := range tm.Roots {
+		if r != nil {
+			roots = append(roots, r)
+		}
+	}
+	return roots
+}
+
 // RootsLock executes a callback with read lock over the roots map.
 func (tm *TreeManager) RootsLock(fn func(roots map[string]*DirNode)) {
 	tm.mu.RLock()
@@ -34,12 +47,28 @@ func (tm *TreeManager) RootsLock(fn func(roots map[string]*DirNode)) {
 	fn(tm.Roots)
 }
 
+// normalizeRootKey standardizes Windows and Unix root drive paths (e.g. "c:" or "c:\" -> "C:\").
+func normalizeRootKey(rootPath string) string {
+	clean := filepath.Clean(rootPath)
+	vol := filepath.VolumeName(clean)
+	if vol != "" {
+		vol = strings.ToUpper(vol)
+		return vol + "\\"
+	}
+	if len(clean) == 2 && clean[1] == ':' {
+		return strings.ToUpper(clean) + "\\"
+	}
+	if !strings.HasSuffix(clean, "\\") && !strings.HasSuffix(clean, "/") {
+		clean += string(filepath.Separator)
+	}
+	return clean
+}
+
 // GetTotalFileCount returns the aggregated total number of files across all roots.
 func (tm *TreeManager) GetTotalFileCount() int64 {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
+	roots := tm.GetRootsSnapshot()
 	var total int64
-	for _, root := range tm.Roots {
+	for _, root := range roots {
 		if root != nil {
 			root.mu.RLock()
 			total += root.FileCount
@@ -51,46 +80,52 @@ func (tm *TreeManager) GetTotalFileCount() int64 {
 
 // GetOrCreateRoot returns or creates the root directory node for a drive/folder.
 func (tm *TreeManager) GetOrCreateRoot(rootPath string) *DirNode {
-	clean := filepath.Clean(rootPath)
-	if !strings.HasSuffix(clean, "\\") && len(clean) == 2 && clean[1] == ':' {
-		clean += "\\"
-	}
+	rootKey := normalizeRootKey(rootPath)
 
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	if root, exists := tm.Roots[clean]; exists {
-		return root
+	// Check exact or case-insensitive match
+	for k, r := range tm.Roots {
+		if strings.EqualFold(k, rootKey) || strings.EqualFold(k, rootPath) {
+			return r
+		}
 	}
 
 	root := &DirNode{
-		Path:     clean,
-		Name:     clean,
+		Path:     rootKey,
+		Name:     rootKey,
 		Children: make(map[string]*DirNode),
 		Files:    make([]*FileNode, 0),
 	}
-	tm.Roots[clean] = root
+	tm.Roots[rootKey] = root
 	return root
 }
 
 // EnsureDirNode finds or creates a directory node along the path.
 func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 	clean := filepath.Clean(dirPath)
+	rootKey := normalizeRootKey(clean)
 	vol := filepath.VolumeName(clean)
-	rootKey := vol + "\\"
-	if vol == "" {
-		rootKey = clean
-	}
 
 	tm.mu.RLock()
 	root, exists := tm.Roots[rootKey]
+	if !exists {
+		for k, r := range tm.Roots {
+			if strings.EqualFold(k, rootKey) || strings.EqualFold(k, vol+"\\") {
+				root = r
+				exists = true
+				break
+			}
+		}
+	}
 	tm.mu.RUnlock()
 
 	if !exists {
 		root = tm.GetOrCreateRoot(rootKey)
 	}
 
-	if clean == rootKey || clean == vol {
+	if clean == rootKey || strings.EqualFold(clean, rootKey) || clean == vol || strings.EqualFold(clean, vol) {
 		return root
 	}
 
@@ -109,6 +144,16 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 		}
 		curr.mu.Lock()
 		child, ok := curr.Children[part]
+		if !ok {
+			// Case-insensitive check for existing children
+			for cName, cNode := range curr.Children {
+				if strings.EqualFold(cName, part) {
+					child = cNode
+					ok = true
+					break
+				}
+			}
+		}
 		if !ok {
 			childPath := filepath.Join(curr.Path, part)
 			child = &DirNode{
@@ -260,22 +305,33 @@ func (tm *TreeManager) bubbleUpSize(dirPath string, sizeDelta int64, fileCountDe
 
 // FindDir returns the DirNode at path, or nil if not found.
 func (tm *TreeManager) FindDir(dirPath string) *DirNode {
+	if dirPath == "" || dirPath == "." || dirPath == "Meus Discos" {
+		return nil
+	}
+
 	clean := filepath.Clean(dirPath)
 	vol := filepath.VolumeName(clean)
-	rootKey := vol + "\\"
-	if vol == "" {
-		rootKey = clean
-	}
+	rootKey := normalizeRootKey(clean)
 
 	tm.mu.RLock()
 	root, exists := tm.Roots[rootKey]
+	if !exists {
+		// Fallback: check case-insensitively across Roots
+		for rKey, rNode := range tm.Roots {
+			if strings.EqualFold(rKey, rootKey) || strings.EqualFold(rKey, clean) || strings.EqualFold(rKey, vol+"\\") {
+				root = rNode
+				exists = true
+				break
+			}
+		}
+	}
 	tm.mu.RUnlock()
 
 	if !exists {
 		return nil
 	}
 
-	if clean == rootKey || clean == vol {
+	if clean == rootKey || strings.EqualFold(clean, rootKey) || clean == vol || strings.EqualFold(clean, vol) {
 		return root
 	}
 
@@ -293,6 +349,16 @@ func (tm *TreeManager) FindDir(dirPath string) *DirNode {
 		}
 		curr.mu.RLock()
 		child, ok := curr.Children[part]
+		if !ok {
+			// Fallback: case-insensitive match for Windows paths
+			for cName, cNode := range curr.Children {
+				if strings.EqualFold(cName, part) {
+					child = cNode
+					ok = true
+					break
+				}
+			}
+		}
 		curr.mu.RUnlock()
 		if !ok {
 			return nil

@@ -978,9 +978,12 @@ func getSystemPhysicalMemory(payload *scanner.MemoryStatsPayload, allocBytes uin
 func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	depthStr := r.URL.Query().Get("depth")
-	depth := 1
+	depth := 4
 	if d, err := strconv.Atoi(depthStr); err == nil && d > 0 {
 		depth = d
+	}
+	if depth > 8 {
+		depth = 8
 	}
 
 	if DebugMode {
@@ -989,17 +992,16 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if path == "" {
-		// Return summary of all roots
+	if path == "" || path == "Meus Discos" {
+		// Return summary of all roots using snapshot to avoid mutex deadlocks
 		rootSummaries := make([]*scanner.DirSummary, 0)
-		s.Tree.RootsLock(func(roots map[string]*scanner.DirNode) {
-			for _, rNode := range roots {
-				summary := s.Tree.GetDirSummary(rNode.Path, depth)
-				if summary != nil {
-					rootSummaries = append(rootSummaries, summary)
-				}
+		roots := s.Tree.GetRootsSnapshot()
+		for _, rNode := range roots {
+			summary := s.Tree.GetDirSummary(rNode.Path, depth)
+			if summary != nil {
+				rootSummaries = append(rootSummaries, summary)
 			}
-		})
+		}
 		_ = json.NewEncoder(w).Encode(rootSummaries)
 		return
 	}

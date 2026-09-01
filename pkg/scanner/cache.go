@@ -63,11 +63,10 @@ func ExportCache(tm *TreeManager, roots []string, config ScanConfig, w io.Writer
 	}
 
 	// Collect all directory paths
-	tm.RootsLock(func(rootsMap map[string]*DirNode) {
-		for _, r := range rootsMap {
-			collectDirPaths(r, &allDirs)
-		}
-	})
+	rootsSnapshot := tm.GetRootsSnapshot()
+	for _, r := range rootsSnapshot {
+		collectDirPaths(r, &allDirs)
+	}
 
 	snapshot := CacheSnapshot{
 		Version:             CurrentCacheVersion,

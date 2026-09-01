@@ -58,11 +58,10 @@ func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 
 	// Step 1: Collect folder summaries using a single-pass post-order bottom-up Merkle traversal O(N)
 	var summaries []*FolderSummary
-	tm.RootsLock(func(roots map[string]*scanner.DirNode) {
-		for _, r := range roots {
-			computeAndCollectFolderMerkle(r, &summaries)
-		}
-	})
+	roots := tm.GetRootsSnapshot()
+	for _, r := range roots {
+		computeAndCollectFolderMerkle(r, &summaries)
+	}
 
 	// Step 2: Bucket directories by FolderContentHash + FolderSize
 	for _, summary := range summaries {

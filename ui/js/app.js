@@ -541,6 +541,14 @@
 
   // Initialize
   async function init() {
+    // Global Safety Guard against browser crash / STATUS_BREAKPOINT
+    window.addEventListener('error', (e) => {
+      console.warn('[ScanFile Safety Guard] Exceção capturada preventivamente:', e.error || e.message);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      console.warn('[ScanFile Safety Guard] Rejeição assíncrona capturada:', e.reason);
+    });
+
     try { setupThemeManager(); } catch (e) { console.error('Error in setupThemeManager:', e); }
     try { setupTabs(); } catch (e) { console.error('Error in setupTabs:', e); }
     try { setupEventListeners(); } catch (e) { console.error('Error in setupEventListeners:', e); }
@@ -1721,7 +1729,17 @@
 
     if (Array.isArray(state.treeData)) {
       // Roots view
-      items = state.treeData;
+      items = state.treeData.map(r => ({
+        path: r.path,
+        name: `💾 Unidade (${r.name || r.path})`,
+        totalSize: r.totalSize || 0,
+        totalAllocatedSize: r.totalAllocatedSize || r.totalSize || 0,
+        fileCount: r.fileCount || 0,
+        subDirCount: r.subDirCount || 0,
+        modTime: r.modTime,
+        createTime: r.createTime,
+        isFile: false,
+      }));
       parentSize = items.reduce((acc, cur) => acc + (cur.totalSize || 0), 0) || 1;
     } else {
       if (state.treeData.subDirs && Array.isArray(state.treeData.subDirs)) {
@@ -2196,9 +2214,11 @@
     renderTreemapCanvas();
   }
 
-  // Squarified Treemap Layout Computation (Bruls, Huizing, van Wijk algorithm) - Stack-Safe
+  // Squarified Treemap Layout Computation (Bruls, Huizing, van Wijk algorithm) - Stack-Safe & Heap-Capped
   function computeSquarifiedLayout(container, x, y, width, height, level, maxDepth, results = []) {
-    if (width <= 0 || height <= 0 || !container) return results;
+    if (width <= 0 || height <= 0 || !container || results.length >= 2000) return results;
+
+    const effectiveMaxDepth = Math.min(maxDepth || 4, 8);
 
     // Collect children: subdirectories and files safely without array spreads
     const children = [];
@@ -2245,7 +2265,7 @@
     children.sort((a, b) => b.totalSize - a.totalSize);
     const totalChildSize = children.reduce((acc, c) => acc + c.totalSize, 0);
 
-    if (children.length === 0 || level >= maxDepth || totalChildSize <= 0) {
+    if (children.length === 0 || level >= effectiveMaxDepth || totalChildSize <= 0) {
       results.push({
         x, y, w: width, h: height,
         node: container,
@@ -2262,7 +2282,7 @@
       const item = rects[i];
       const hasSubChildren = (item.node.subDirs && item.node.subDirs.length > 0) || 
                              (item.node.files && item.node.files.length > 0);
-      const isLeafChild = item.node.isFile || level + 1 >= maxDepth || !hasSubChildren;
+      const isLeafChild = item.node.isFile || level + 1 >= effectiveMaxDepth || !hasSubChildren;
 
       if (isLeafChild) {
         results.push({
@@ -2276,7 +2296,7 @@
         });
       } else {
         // Recurse into subdirectory passing results accumulator directly (Stack-Safe)
-        computeSquarifiedLayout(item.node, item.x, item.y, item.w, item.h, level + 1, maxDepth, results);
+        computeSquarifiedLayout(item.node, item.x, item.y, item.w, item.h, level + 1, effectiveMaxDepth, results);
       }
     }
 
@@ -2380,40 +2400,50 @@
   // Render Treemap on Canvas with Authentic WinDirStat Cushion Shading
   function renderTreemapCanvas() {
     if (!elements.treemapCanvas) return;
-    const ctx = elements.treemapCanvas.getContext('2d');
-    const width = parseFloat(elements.treemapCanvas.style.width) || elements.treemapCanvas.width;
-    const height = parseFloat(elements.treemapCanvas.style.height) || elements.treemapCanvas.height;
+    try {
+      const ctx = elements.treemapCanvas.getContext('2d');
+      const width = parseFloat(elements.treemapCanvas.style.width) || elements.treemapCanvas.width;
+      const height = parseFloat(elements.treemapCanvas.style.height) || elements.treemapCanvas.height;
 
-    // Clear
-    ctx.clearRect(0, 0, width, height);
+      // Clear
+      ctx.clearRect(0, 0, width, height);
 
-    if (!state.treemap.layoutNodes || state.treemap.layoutNodes.length === 0) {
-      ctx.fillStyle = '#64748b';
-      ctx.font = '14px Inter, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('Nenhum dado para exibir no Treemap. Inicie uma varredura para visualizar os blocos.', width / 2, height / 2);
-      ctx.textAlign = 'left';
-      return;
-    }
+      if (!state.treemap.layoutNodes || state.treemap.layoutNodes.length === 0) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '14px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Nenhum dado para exibir no Treemap. Inicie uma varredura para visualizar os blocos.', width / 2, height / 2);
+        ctx.textAlign = 'left';
+        return;
+      }
 
-    const colorMode = state.treemap.colorMode || 'extension';
-    const leaves = state.treemap.layoutNodes.filter(n => n.isLeaf);
+      const colorMode = state.treemap.colorMode || 'extension';
+      let leaves = state.treemap.layoutNodes.filter(n => n.isLeaf && n.w > 0.5 && n.h > 0.5 && Number.isFinite(n.x) && Number.isFinite(n.y));
 
-    // Draw leaf cushions (True WinDirStat 3D Specular Pillows)
-    for (let i = 0; i < leaves.length; i++) {
-      const n = leaves[i];
-      const isHovered = state.treemap.hoveredNode && state.treemap.hoveredNode.node.path === n.node.path;
-      const isSelected = state.treemap.selectedNode && state.treemap.selectedNode.node.path === n.node.path;
-      const baseColor = getNodeColor(n.node, colorMode, n.level);
+      // Guard against GPU memory overload: sort by area descending and cap to top 1,500 blocks
+      if (leaves.length > 1500) {
+        leaves.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+        leaves = leaves.slice(0, 1500);
+      }
 
-      const label = n.node.name;
-      const sublabel = formatBytes(n.node.totalSize);
+      // Draw leaf cushions (True WinDirStat 3D Specular Pillows)
+      for (let i = 0; i < leaves.length; i++) {
+        const n = leaves[i];
+        const isHovered = state.treemap.hoveredNode && state.treemap.hoveredNode.node && state.treemap.hoveredNode.node.path === n.node.path;
+        const isSelected = state.treemap.selectedNode && state.treemap.selectedNode.node && state.treemap.selectedNode.node.path === n.node.path;
+        const baseColor = getNodeColor(n.node, colorMode, n.level);
 
-      drawCushionRect(ctx, n.x, n.y, n.w, n.h, baseColor, isHovered, isSelected, label, sublabel, n.isLeaf, n.level);
+        const label = n.node.name;
+        const sublabel = formatBytes(n.node.totalSize);
+
+        drawCushionRect(ctx, n.x, n.y, n.w, n.h, baseColor, isHovered, isSelected, label, sublabel, n.isLeaf, n.level);
+      }
+    } catch (err) {
+      console.warn('[Treemap Safety Guard] Erro ao renderizar canvas:', err);
     }
   }
 
-  // Draw Authentic WinDirStat 3D Glossy Cushion Shading
+  // Draw Authentic WinDirStat 3D Glossy Cushion Shading (GPU-Safe & Crash-Proof)
   function drawCushionRect(ctx, x, y, w, h, baseColor, isHovered, isSelected, label, sublabel, isLeaf, level) {
     if (w <= 0 || h <= 0) return;
 
@@ -2422,7 +2452,8 @@
     ctx.fillRect(x, y, w, h);
 
     // 2. WinDirStat Specular Cushion Highlight (Spherical / Diagonal Gloss Lighting)
-    if (w >= 3 && h >= 3) {
+    // CRITICAL: Only create expensive CanvasRadialGradient on visible blocks (w >= 14 && h >= 14) to prevent STATUS_BREAKPOINT crashes in Chromium
+    if (w >= 14 && h >= 14) {
       // Off-center specular highlight point towards top-left
       const cx = x + w * 0.35;
       const cy = y + h * 0.35;
@@ -2438,7 +2469,7 @@
       ctx.fillRect(x, y, w, h);
 
       // Inner Light Bevel (Top & Left edge highlight)
-      if (w > 6 && h > 6) {
+      if (w > 20 && h > 20) {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.32)';
         ctx.fillRect(x, y, w, 1);
         ctx.fillRect(x, y, 1, h);
@@ -2448,6 +2479,14 @@
         ctx.fillRect(x, y + h - 1, w, 1);
         ctx.fillRect(x + w - 1, y, 1, h);
       }
+    } else if (w >= 4 && h >= 4) {
+      // Fast lightweight specular highlight for medium blocks without gradient allocation
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.fillRect(x, y, w, 1);
+      ctx.fillRect(x, y, 1, h);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+      ctx.fillRect(x, y + h - 1, w, 1);
+      ctx.fillRect(x + w - 1, y, 1, h);
     }
 
     // 3. Outer Border / Pillow Seam
@@ -2462,7 +2501,7 @@
       ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
       ctx.fillRect(x, y, w, h);
     } else {
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
       ctx.lineWidth = 1;
       ctx.strokeRect(x, y, w, h);
     }

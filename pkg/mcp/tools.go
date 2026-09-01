@@ -211,14 +211,13 @@ func (tc *MCPToolsContext) ClassifyFiles(ctx context.Context, params ClassifyFil
 			}
 		}
 
-		tc.Tree.RootsLock(func(roots map[string]*scanner.DirNode) {
-			for _, root := range roots {
-				walkFn(root)
-				if len(results) >= params.Limit {
-					break
-				}
+		roots := tc.Tree.GetRootsSnapshot()
+		for _, root := range roots {
+			walkFn(root)
+			if len(results) >= params.Limit {
+				break
 			}
-		})
+		}
 	}
 
 	return results, nil
