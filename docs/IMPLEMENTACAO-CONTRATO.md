@@ -182,3 +182,13 @@ Ligar tudo conforme a seção 1: middleware de token e `Origin`; injeção do to
 ## 9. Etapa 3 — ADR-0001, nó compacto
 
 Depois de tudo verde: `FileNode` sem `Path` armazenado (derivado do `DirNode` pai), extensão internada, hash em bytes fixos com algoritmo; `MarshalJSON` mantém exatamente o JSON atual (`path`, `name`, `size`, ..., `hash` como string com prefixo, `extension`). Meta: ≤ 150 bytes por item medidos por benchmark com 1 M de itens sintéticos.
+
+### 8.1 Propriedade de arquivos na etapa 2 (`pkg/server` já dividido por responsabilidade)
+
+| Agente | Arquivos exclusivos | Responsabilidades |
+|---|---|---|
+| S1 — segurança e arquivos | `auth.go`, `handlers_files.go`, `handlers_ai.go`, `auth_test.go`, `handlers_files_test.go`, `handlers_ai_test.go` | token e Origin (1.1), injeção do token no `index.html`, drives (1.12), reciclagem/exclusão com escopo, proteção, preflight e confirmações (1.5), config parcial e segredo (1.6), Assistente com aprovação, raízes permitidas e catálogo (1.11), `/api/system/info` (1.3) |
+| S2 — estado da varredura | `server.go`, `sse.go`, `handlers_scan.go`, `handlers_cache.go` e seus `_test.go` | `409`/cancelamento com contexto próprio e fases (1.2), threads efetivas (1.3), `/api/tree` com teto e `/api/tree/files` (1.4), restore/load com `summary` e streaming (1.7), autosave com ticker único e "só se mudou", `/api/logs/skipped` (1.10), watcher novo com `HashFunc` e revarredura em estouro, `SetAllowedRoots` a cada scan/load, `NewAppServer` |
+| S3 — ciclo de vida | `lifecycle.go`, `lifecycle_test.go`, `main.go` | `Start` sem `WriteTimeout` global (`ReadHeaderTimeout` + `IdleTimeout`, deadlines por handler via `http.ResponseController` onde precisar), porta fixa e fallback, `instance.json`, `/api/instance` e `/api/instance/focus`, presença e desligamento (1.9), `POST /api/ui/closed`, handoff de elevação, `--mcp` com autosave, `--no-window` |
+
+Regras: `AppServer` já tem os campos de sessão/ciclo de vida/varredura pré-declarados em `server.go`; S1 e S3 usam esses campos e não editam `server.go` (se faltar um campo, peçam no relatório e usem uma variável de pacote temporária). Cada agente registra suas rotas na própria função `register*Routes`. `testutil_test.go` fornece `newTestServer(t)` para todos.
