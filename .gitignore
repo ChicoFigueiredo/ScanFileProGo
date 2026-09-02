@@ -15,3 +15,9 @@ ScanFile_Webview_Profile/
 saved_scans/
 *.sfz
 *.scanfile.gz
+
+# Configuracao local do usuario (pode conter chave de API) - use scanfile_config.example.json como modelo
+scanfile_config.json
+
+# Modelos locais .gguf
+models/
