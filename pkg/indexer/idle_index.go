@@ -164,4 +164,3 @@ func QueryIdleFilesStreaming(tree *scanner.TreeManager, minAgeDays int, minSizeB
 		Limit:          limit,
 	}
 }
-
