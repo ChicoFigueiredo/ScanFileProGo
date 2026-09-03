@@ -1,12 +1,16 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 
 	"scanfile/pkg/ai"
 	"scanfile/pkg/config"
 	"scanfile/pkg/mcp"
+	"scanfile/pkg/recycle"
 )
 
 // =========================================================================
@@ -199,4 +203,84 @@ func storeProposal(t *testing.T, app *AppServer) string {
 		t.Fatal("a Proposta nasceu executada: propose_actions nunca executa")
 	}
 	return proposal.ID
+}
+
+// --- Desfecho real da execução de uma Proposta -------------------------------
+
+// TestExecuteActionReportsOnlyWhatLeftTheDisk cobre o caso em que a Proposta é
+// recusada por inteiro: nada saiu do disco, então o resultado não pode anunciar
+// sucesso nem bytes liberados, e a Proposta continua pendente para nova
+// tentativa.
+func TestExecuteActionReportsOnlyWhatLeftTheDisk(t *testing.T) {
+	app, ts := newAuthedTestServer(t)
+
+	dir := tempDir(t)
+	alvo := writeTempFile(t, dir, "recusado.bin", 4096)
+
+	// Sem Raízes Varridas o Assistente recusa tudo o que tocaria o disco.
+	app.MCPContext.SetAllowedRoots([]string{dir})
+	prop, err := app.MCPContext.ProposeActions(mcp.ProposeActionParams{
+		ActionType: "RECYCLE",
+		Files:      []string{alvo},
+	})
+	if err != nil {
+		t.Fatalf("não foi possível criar a Proposta: %v", err)
+	}
+
+	// A Reciclagem recusa todos os itens, como faria uma Pasta Protegida ou um
+	// volume sem Lixeira.
+	app.MCPContext.RecycleFunc = func(paths []string) recycle.BatchDeleteResult {
+		items := make([]recycle.ItemResult, 0, len(paths))
+		for _, p := range paths {
+			items = append(items, recycle.ItemResult{
+				Path:   p,
+				Status: recycle.StatusRefused,
+				Reason: "volume sem Lixeira disponível",
+			})
+		}
+		return recycle.BatchDeleteResult{
+			TotalRequested: len(paths),
+			RefusedCount:   len(paths),
+			Items:          items,
+		}
+	}
+
+	resp := postJSON(t, ts, "/api/ai/actions/execute", map[string]any{
+		"proposalId": prop.ID,
+		"confirm":    true,
+	})
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, esperado 200 mesmo com tudo recusado", resp.StatusCode)
+	}
+
+	var out ai.ActionExecuteResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("resposta inválida: %v", err)
+	}
+
+	if out.Success {
+		t.Error("success = true, mas nenhum arquivo saiu do disco")
+	}
+	if out.Affected != 0 {
+		t.Errorf("affected = %d, esperado 0", out.Affected)
+	}
+	if out.FreedBytes != 0 {
+		t.Errorf("freedBytes = %d, esperado 0: nada foi liberado", out.FreedBytes)
+	}
+	if len(out.Errors) == 0 {
+		t.Error("o motivo da recusa deveria chegar à interface")
+	}
+	if !strings.Contains(out.Message, "recusado") {
+		t.Errorf("mensagem = %q, deveria dizer que houve recusa", out.Message)
+	}
+
+	// O arquivo continua lá e a Proposta segue pendente.
+	if _, err := os.Stat(alvo); err != nil {
+		t.Errorf("o arquivo recusado deveria continuar no disco: %v", err)
+	}
+	if stored, ok := app.MCPContext.GetProposal(prop.ID); !ok || stored.Executed {
+		t.Error("uma Proposta inteiramente recusada não pode ficar marcada como executada")
+	}
 }

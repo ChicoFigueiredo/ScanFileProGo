@@ -8,6 +8,7 @@ import (
 
 	"scanfile/pkg/ai"
 	"scanfile/pkg/config"
+	"scanfile/pkg/mcp"
 )
 
 // handleAIModels answers the catalogue as a plain array of models, the shape
@@ -166,7 +167,11 @@ func (s *AppServer) handleAIExecuteAction(w http.ResponseWriter, r *http.Request
 	}
 
 	proposal, err := s.MCPContext.ExecuteProposal(req.ProposalID)
-	if err != nil {
+
+	// Uma execução parcial devolve Proposta E erro: o que saiu precisa ser
+	// contado, e o que foi recusado precisa aparecer. Só é 500 quando nada
+	// voltou (Proposta inexistente ou expirada).
+	if proposal == nil {
 		writeAPIError(w, http.StatusInternalServerError,
 			fmt.Sprintf("Falha ao executar a Proposta %s: %v", req.ProposalID, err),
 			"execute_failed")
@@ -176,9 +181,34 @@ func (s *AppServer) handleAIExecuteAction(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, ai.ActionExecuteResult{
 		Success:    proposal.Executed,
 		ActionType: proposal.ActionType,
-		Affected:   proposal.FileCount,
-		FreedBytes: proposal.TotalBytes,
-		FreedSize:  proposal.TotalSize,
-		Message:    fmt.Sprintf("Ação %s executada com sucesso para %d arquivos.", proposal.ActionType, proposal.FileCount),
+		Affected:   proposal.SucceededCount,
+		FreedBytes: proposal.FreedBytes,
+		FreedSize:  proposal.FreedSize,
+		Errors:     proposal.Errors,
+		Message:    executeMessage(proposal),
 	})
+}
+
+// executeMessage descreve o desfecho real da Proposta: quantos itens saíram,
+// quantos foram recusados (Pasta Protegida, fora das Raízes Varridas, volume
+// sem Lixeira) e quantos falharam.
+func executeMessage(p *mcp.ActionProposal) string {
+	if p.SucceededCount == 0 {
+		if p.RefusedCount > 0 {
+			return fmt.Sprintf("Nenhum item foi processado: %d recusado(s). A Proposta segue pendente.", p.RefusedCount)
+		}
+		return fmt.Sprintf("Nenhum item foi processado: %d falha(s). A Proposta segue pendente.", p.FailedCount)
+	}
+
+	msg := fmt.Sprintf("Ação %s aplicada a %d de %d arquivo(s)", p.ActionType, p.SucceededCount, p.FileCount)
+	if p.FreedSize != "" {
+		msg += fmt.Sprintf(", liberando %s", p.FreedSize)
+	}
+	if p.RefusedCount > 0 {
+		msg += fmt.Sprintf(". %d recusado(s)", p.RefusedCount)
+	}
+	if p.FailedCount > 0 {
+		msg += fmt.Sprintf(". %d com falha", p.FailedCount)
+	}
+	return msg + "."
 }
