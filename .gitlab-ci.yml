@@ -1,6 +1,9 @@
 # GitLab CI/CD Pipeline - ScanFile Pro (Auto-Minor Release)
+#
+# Espelho do pipeline oficial em .github/workflows/ci-cd.yml (Q14/Q34).
+# A versao do Go acompanha o go.mod (go 1.26.x).
 
-image: golang:1.22-bookworm
+image: golang:1.26
 
 stages:
   - test
@@ -8,8 +11,9 @@ stages:
   - release
 
 variables:
+  # Padrao do projeto: binario autocontido, sem runtime C.
+  # O job de teste sobrescreve para "1" porque o -race exige CGO.
   CGO_ENABLED: "0"
-  DEFAULT_VERSION: "0.1.0"
 
 # Cache de módulos Go para acelerar o pipeline
 cache:
@@ -26,10 +30,32 @@ before_script:
 # ====================================================
 lint-and-test:
   stage: test
+  variables:
+    # O detector de corrida (-race) so funciona com CGO habilitado.
+    CGO_ENABLED: "1"
+  before_script:
+    # Node 22, o mesmo do GitHub. O nodejs do Debian ainda e o 18, que nao aceita
+    # padroes glob em "node --test" (recurso do Node 21+).
+    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg
+    - install -d -m 0755 /etc/apt/keyrings
+    - curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    - echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+    - apt-get update && apt-get install -y --no-install-recommends nodejs
+    - node --version
+    - mkdir -p .go
+    - export GOPATH="$CI_PROJECT_DIR/.go"
   script:
     - go mod download
     - go vet ./...
     - go test -v -race ./...
+    - |
+      # Aspas obrigatorias: o Node recente nao expande um diretorio em --test
+      # e o padrao precisa chegar inteiro ao Node, sem o shell expandir antes.
+      if [ -d ui/tests ]; then
+        node --test "ui/tests/**/*.test.mjs"
+      else
+        echo "Diretorio ui/tests ausente; etapa ignorada."
+      fi
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -42,13 +68,13 @@ build-windows:
   stage: build
   dependencies: []
   before_script:
-    - apt-get update && apt-get install -y zip git
+    - apt-get update && apt-get install -y --no-install-recommends zip git
     - mkdir -p .go
     - export GOPATH="$CI_PROJECT_DIR/.go"
   script:
     - |
       git fetch --tags || true
-      
+
       # Determinar versão com incremento automático de MINOR
       if [ -n "$CI_COMMIT_TAG" ]; then
         VERSION="${CI_COMMIT_TAG#v}"
@@ -71,23 +97,26 @@ build-windows:
         [ -z "$RAW_VER" ] && RAW_VER="0.1.0"
         MAJOR=$(echo "$RAW_VER" | cut -d. -f1)
         MINOR=$(echo "$RAW_VER" | cut -d. -f2)
-        VERSION="${MAJOR}.$((MINOR + 1)).0-mr.${CI_MERGE_REQUEST_IID:-$CI_PIPELINE_IID}"
+        VERSION="${MAJOR}.$((MINOR + 1)).0-pr.${CI_MERGE_REQUEST_IID:-$CI_PIPELINE_IID}"
         TAG_NAME="v${VERSION}"
       fi
 
       BUILD_DATE=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
       echo "Compilando ScanFile Pro v${VERSION} (Tag: ${TAG_NAME}, Commit: ${CI_COMMIT_SHORT_SHA})..."
-      
+
       mkdir -p dist
-      GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${CI_COMMIT_SHORT_SHA}' -X 'main.Date=${BUILD_DATE}'" -o dist/scanfile.exe main.go
-      
-      # Empacotar ZIP com binário e documentação
-      cd dist
+      GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${CI_COMMIT_SHORT_SHA}' -X 'main.Date=${BUILD_DATE}'" -o dist/scanfile.exe .
+
+      # Empacotar ZIP com binário e documentação (via staging, sem caminhos "../")
       ZIP_NAME="scanfile-v${VERSION}-windows-amd64.zip"
-      zip -r "$ZIP_NAME" scanfile.exe ../README.md ../docs/
-      sha256sum "$ZIP_NAME" > checksums-sha256.txt
-      cd ..
-      
+      rm -rf dist/pkg
+      mkdir -p dist/pkg
+      cp dist/scanfile.exe README.md LICENSE dist/pkg/
+      cp -r docs dist/pkg/
+      (cd dist/pkg && zip -r "../${ZIP_NAME}" .)
+      rm -rf dist/pkg
+      (cd dist && sha256sum "${ZIP_NAME}" > checksums-sha256.txt)
+
       echo "VERSION=${VERSION}" >> build.env
       echo "TAG_NAME=${TAG_NAME}" >> build.env
       echo "ZIP_NAME=${ZIP_NAME}" >> build.env
@@ -118,8 +147,8 @@ upload-package:
     - |
       PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/scanfile/${VERSION}/${ZIP_NAME}"
       echo "Enviando artefato para o Package Registry: ${PACKAGE_URL}"
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${ZIP_NAME} \
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file "dist/${ZIP_NAME}" \
            "${PACKAGE_URL}"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
