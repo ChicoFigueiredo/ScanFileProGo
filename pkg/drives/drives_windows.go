@@ -13,18 +13,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// DriveInfo contains information about a logical storage drive.
-type DriveInfo struct {
-	Letter      string  `json:"letter"`      // e.g. "C:\\"
-	VolumeLabel string  `json:"volumeLabel"` // e.g. "Windows"
-	FileSystem  string  `json:"fileSystem"`  // e.g. "NTFS"
-	TotalBytes  uint64  `json:"totalBytes"`
-	FreeBytes   uint64  `json:"freeBytes"`
-	UsedBytes   uint64  `json:"usedBytes"`
-	UsedPercent float64 `json:"usedPercent"`
-	DriveType   string  `json:"driveType"`   // e.g. "Fixed (SSD/HDD)", "Removable", "Network", "CD-ROM"
-}
-
 var (
 	modmpr                  = windows.NewLazySystemDLL("mpr.dll")
 	procWNetGetConnectionW  = modmpr.NewProc("WNetGetConnectionW")
@@ -114,10 +102,11 @@ func GetLogicalDrives() ([]DriveInfo, error) {
 				// Timeout on this specific drive (e.g. disconnected network mount or sleeping disk)
 				mu.Lock()
 				results = append(results, DriveInfo{
-					Letter:      drivePath,
-					VolumeLabel: "Unidade Indisponível",
-					FileSystem:  "N/A",
-					DriveType:   "Desconectado / Timeout",
+					Letter:          drivePath,
+					VolumeLabel:     "Unidade Indisponível",
+					FileSystem:      "N/A",
+					DriveType:       DriveTypeUnavailable,
+					DefaultSelected: false,
 				})
 				mu.Unlock()
 			}
@@ -134,10 +123,11 @@ func GetLogicalDrives() ([]DriveInfo, error) {
 	// Absolute safety fallback: if nothing returned, at least provide C:\
 	if len(results) == 0 {
 		results = append(results, DriveInfo{
-			Letter:      "C:\\",
-			VolumeLabel: "Disco Local (C:)",
-			FileSystem:  "NTFS",
-			DriveType:   "Fixed (SSD/HDD)",
+			Letter:          "C:\\",
+			VolumeLabel:     "Disco Local (C:)",
+			FileSystem:      "NTFS",
+			DriveType:       DriveTypeFixed,
+			DefaultSelected: true,
 		})
 	}
 
@@ -198,17 +188,17 @@ func probeSingleDrive(drivePath string, getDriveTypeProc *windows.LazyProc) (Dri
 	var driveTypeStr string
 	switch driveTypeVal {
 	case 2:
-		driveTypeStr = "Removable"
+		driveTypeStr = DriveTypeRemovable
 	case 3:
-		driveTypeStr = "Fixed (SSD/HDD)"
+		driveTypeStr = DriveTypeFixed
 	case 4:
-		driveTypeStr = "Network"
+		driveTypeStr = DriveTypeNetwork
 	case 5:
-		driveTypeStr = "CD-ROM"
+		driveTypeStr = DriveTypeCDRom
 	case 6:
-		driveTypeStr = "RAM Disk"
+		driveTypeStr = DriveTypeRAMDisk
 	default:
-		driveTypeStr = "Outro"
+		driveTypeStr = DriveTypeOther
 	}
 
 	// 2. Query Volume Info (safe, non-failing)
@@ -257,13 +247,15 @@ func probeSingleDrive(drivePath string, getDriveTypeProc *windows.LazyProc) (Dri
 	}
 
 	return DriveInfo{
-		Letter:      drivePath,
-		VolumeLabel: volumeLabel,
-		FileSystem:  fileSystem,
-		TotalBytes:  totalBytes,
-		FreeBytes:   totalFreeBytes,
-		UsedBytes:   usedBytes,
-		UsedPercent: usedPercent,
-		DriveType:   driveTypeStr,
+		Letter:          drivePath,
+		VolumeLabel:     volumeLabel,
+		FileSystem:      fileSystem,
+		TotalBytes:      totalBytes,
+		FreeBytes:       totalFreeBytes,
+		UsedBytes:       usedBytes,
+		UsedPercent:     usedPercent,
+		DriveType:       driveTypeStr,
+		IsWSL:           IsWSLVolume(fileSystem, drivePath),
+		DefaultSelected: IsDefaultSelected(driveTypeStr, fileSystem, drivePath),
 	}, true
 }
