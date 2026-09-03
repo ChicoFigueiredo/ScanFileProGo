@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -187,7 +186,7 @@ func NewAppServer(uiFS fs.FS) *AppServer {
 	toolsDefs := mcp.GetOpenAIToolDefinitions()
 	agent := ai.NewAgentCoordinator(
 		cfg.AIOllamaEndpoint,
-		cfg.AIOpenRouterKey,
+		config.OpenRouterKey(cfg),
 		"",
 		&serverToolsExecutor{mcpCtx: mcpCtx},
 		toolsDefs,
@@ -273,20 +272,6 @@ func GetLiveMemoryStats() *scanner.MemoryStatsPayload {
 
 	getSystemPhysicalMemory(payload, m.Alloc)
 	return payload
-}
-
-func (s *AppServer) findFileInTree(filePath string) *scanner.FileNode {
-	dir := filepath.Dir(filePath)
-	node := s.Tree.FindDir(dir)
-	if node == nil {
-		return nil
-	}
-	for _, f := range node.Files {
-		if f.Path == filePath {
-			return f
-		}
-	}
-	return nil
 }
 
 // Fases da Varredura publicadas em ScanStatus.Phase (contrato 1.2).

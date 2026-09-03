@@ -619,7 +619,10 @@ func (s *AppServer) Start(port int) (string, error) {
 		_ = s.httpServer.Serve(ln)
 	}()
 
-	if err := WriteInstanceFile(InstanceInfo{Port: actualPort, PID: os.Getpid(), Token: s.sessionToken}); err != nil {
+	// s.token() cria o token na primeira leitura: gravar o campo cru escreveria
+	// uma string vazia em instance.json e a instância seguinte teria o foco
+	// recusado com 401.
+	if err := WriteInstanceFile(InstanceInfo{Port: actualPort, PID: os.Getpid(), Token: s.token()}); err != nil {
 		log.Printf("[!] Não foi possível gravar %s: %v\n", InstanceFilePath(), err)
 	}
 
@@ -669,9 +672,9 @@ func (s *AppServer) Stop() {
 
 		s.removeInstanceFile()
 
-		if s.Watcher != nil {
-			s.Watcher.Stop()
-		}
+		// Encerra Varredura, Monitoramento, relógio do Autosave e o log de erros
+		// em disco antes de derrubar o servidor HTTP.
+		s.StopBackground()
 		if s.httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

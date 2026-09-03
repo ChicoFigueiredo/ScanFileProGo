@@ -150,6 +150,9 @@ func (s *AppServer) orchestrateScan(ctx context.Context, cancel context.CancelFu
 		s.scanMu.Unlock()
 		cancel()
 		close(done)
+		// Avisa o ciclo de vida: se a Janela fechou durante a Varredura, o
+		// desligamento adiado acontece agora (contrato 1.9, Q33).
+		s.onScanFinished()
 	}()
 
 	// FASE 1: metadados.

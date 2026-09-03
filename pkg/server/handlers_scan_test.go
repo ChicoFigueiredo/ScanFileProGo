@@ -15,24 +15,16 @@ import (
 	"scanfile/pkg/scanner"
 )
 
-// tempDir cria uma pasta temporária apagada no fim do teste sem reprovar o
-// teste se o Windows recusar a remoção: arquivos recém-fechados costumam ficar
-// em "delete pending" e o t.TempDir transforma isso em falha.
-func tempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "scanfile-test-")
-	if err != nil {
-		t.Fatalf("não foi possível criar a pasta temporária: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
-}
+// tempDir vive em handlers_files_test.go: cria uma pasta temporária apagada no
+// fim do teste sem reprovar o teste se o Windows recusar a remoção (arquivos
+// recém-fechados ficam em "delete pending" e o t.TempDir transforma isso em
+// falha).
 
 // newScanTestServer devolve um AppServer de teste com a pasta de Snapshots
 // isolada e todas as tarefas de fundo encerradas ao final.
 func newScanTestServer(t *testing.T) (*AppServer, *httptest.Server) {
 	t.Helper()
-	app, ts := newTestServer(t)
+	app, ts := newAuthedTestServer(t)
 	app.savedScansDir = tempDir(t)
 	t.Cleanup(app.StopBackground)
 	return app, ts

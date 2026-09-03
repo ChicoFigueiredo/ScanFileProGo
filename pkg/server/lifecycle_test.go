@@ -64,7 +64,7 @@ func waitClosed(t *testing.T, ch <-chan struct{}, timeout time.Duration) bool {
 
 func TestInstanceIdentityRespondsWithoutToken(t *testing.T) {
 	isolateInstanceDir(t)
-	_, ts := newTestServer(t)
+	_, ts := newAuthedTestServer(t)
 
 	resp, err := http.Get(ts.URL + "/api/instance")
 	if err != nil {
@@ -92,7 +92,7 @@ func TestInstanceIdentityRespondsWithoutToken(t *testing.T) {
 
 func TestInstanceIdentityRejectsPost(t *testing.T) {
 	isolateInstanceDir(t)
-	_, ts := newTestServer(t)
+	_, ts := newAuthedTestServer(t)
 
 	resp, err := http.Post(ts.URL+"/api/instance", "application/json", nil)
 	if err != nil {
@@ -339,7 +339,7 @@ func TestNoWindowDisablesPresenceShutdown(t *testing.T) {
 
 func TestUIClosedMarksAbsenceImmediately(t *testing.T) {
 	app := newLifecycleServer(t, 30*time.Millisecond)
-	ts := httptest.NewServer(app.Handler())
+	ts := httptest.NewServer(authedHandler(app))
 	defer ts.Close()
 
 	app.clientConnected() // a Janela está aberta
@@ -373,7 +373,7 @@ func TestClientReconnectCancelsPendingShutdown(t *testing.T) {
 
 func TestFocusCancelsPendingShutdown(t *testing.T) {
 	app := newLifecycleServer(t, 150*time.Millisecond)
-	ts := httptest.NewServer(app.Handler())
+	ts := httptest.NewServer(authedHandler(app))
 	defer ts.Close()
 
 	app.markClientGone()
@@ -397,7 +397,7 @@ func TestFocusCancelsPendingShutdown(t *testing.T) {
 
 func TestSSEConnectionCountsAsPresenceAndReleasesOnClose(t *testing.T) {
 	app := newLifecycleServer(t, 40*time.Millisecond)
-	ts := httptest.NewServer(app.Handler())
+	ts := httptest.NewServer(authedHandler(app))
 	defer ts.Close()
 
 	// handleSSE só escreve no primeiro evento, então a resposta não chega antes
@@ -452,7 +452,7 @@ func TestShutdownBroadcastsSSEEventBeforeStopping(t *testing.T) {
 	app.lc().shutdownFlushDelay = 150 * time.Millisecond
 	app.presenceMu.Unlock()
 
-	ts := httptest.NewServer(app.Handler())
+	ts := httptest.NewServer(authedHandler(app))
 	defer ts.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
