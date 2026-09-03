@@ -4,10 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ScanFile Pro - Análise de Disco, Hash e Monitoramento em Tempo Real</title>
+  <meta name="scanfile-token" content="{{SCANFILE_TOKEN}}">
   <link rel="stylesheet" href="css/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body class="dark-theme">  <!-- Top Navigation / App Header -->
   <header class="app-header">
@@ -201,17 +199,17 @@
           <div class="config-group">
             <label for="workerThreads">Threads de Varredura:</label>
             <select id="workerThreads" class="form-select">
-              <option value="4">4 Threads</option>
-              <option value="8" selected>8 Threads (Recomendado)</option>
-              <option value="16">16 Threads (Alto Desempenho)</option>
-              <option value="32">32 Threads (Varredura Extrema)</option>
+              <option value="0" selected>Auto (definido pelo servidor)</option>
             </select>
+            <small class="form-hint" id="workerThreadsHint">Consultando os núcleos do processador...</small>
           </div>
 
           <div class="config-group">
             <label for="hashAlgo">Algoritmo de Hash:</label>
             <select id="hashAlgo" class="form-select">
-              <option value="xxhash" selected>xxHash64 (Ultra Rápido - 10+ GB/s)</option>
+              <option value="xxhash" selected>xxHash64 (Ultra Rápido - padrão)</option>
+              <option value="blake3">BLAKE3 (Rápido e Criptográfico)</option>
+              <option value="md5">MD5 (Compatibilidade)</option>
               <option value="sha256">SHA-256 (Criptográfico Seguro)</option>
             </select>
           </div>
@@ -275,6 +273,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"></rect></svg>
             Cancelar Varredura
           </button>
+          <span id="scanPhaseText" class="scan-phase-text">Ocioso</span>
         </div>
       </div>
 
@@ -286,6 +285,7 @@
             <div id="hudQuickScanBadge" class="hud-quick-badge hidden">⚡ Quick Scan (Incremental)</div>
             <div id="hudAutoSaveBadge" class="hud-autosave-badge hidden">💾 Auto-Salvo</div>
             <div id="hudErrorsBadge" class="hud-error-badge hidden">0 Arquivos Bloqueados / Ignorados</div>
+            <div id="hudWorkersBadge" class="hud-workers-badge hidden">Threads efetivas</div>
           </div>
           <div class="hud-stats-row">
             <div class="hud-stat-box">
@@ -319,6 +319,14 @@
             <div class="hud-stat-box">
               <span class="stat-label">Economia / Ganho</span>
               <span class="stat-val" id="statCompressedSaved" style="color: #34d399;">0 B</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Itens Pulados</span>
+              <span class="stat-val" id="statSkipped">0</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Pré-hash</span>
+              <span class="stat-val" id="statPrehash">0</span>
             </div>
             <div class="hud-stat-box">
               <span class="stat-label">Velocidade</span>
@@ -426,8 +434,17 @@
               <input type="range" id="treemapDepth" min="1" max="10" value="5" class="range-slider">
             </div>
 
+            <div class="treemap-color-select-wrap">
+              <label for="treeFilesSortBy">Arquivos:</label>
+              <select id="treeFilesSortBy" class="form-select form-select-sm" title="Ordem da tabela paginada de arquivos da pasta atual">
+                <option value="size_desc" selected>Maior tamanho</option>
+                <option value="name_asc">Nome (A-Z)</option>
+                <option value="mod_desc">Modificados recentemente</option>
+              </select>
+            </div>
+
             <div class="tree-search-wrap">
-              <input type="text" id="treeSearchInput" class="form-input form-input-sm" placeholder="Buscar na árvore...">
+              <input type="text" id="treeSearchInput" class="form-input form-input-sm" placeholder="Buscar na página atual...">
             </div>
 
             <button id="btnTreeMaxHeight" class="btn btn-secondary btn-sm" title="Expandir Altura Máxima da Tela">
@@ -465,6 +482,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="treeFilesHint" class="tree-files-hint">As subpastas vêm inteiras; os arquivos são paginados de 100 em 100 pelo servidor.</div>
             <div id="treePaginationBar" class="pagination-bar"></div>
           </div>
 
@@ -577,6 +595,10 @@
             <button id="btnRecycleSelected" class="btn btn-danger btn-sm" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               Mandar para Lixeira do Windows
+            </button>
+
+            <button id="btnDeleteSelectedDups" class="btn btn-permanent-delete btn-sm" disabled title="Exclusão Permanente: os arquivos NÃO vão para a Lixeira e não podem ser restaurados">
+              ⛔ Excluir permanentemente
             </button>
           </div>
         </div>
@@ -797,6 +819,10 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               Mandar para Lixeira do Windows
             </button>
+
+            <button id="btnDeleteIdleSelected" class="btn btn-permanent-delete btn-sm" disabled title="Exclusão Permanente: os arquivos NÃO vão para a Lixeira e não podem ser restaurados">
+              ⛔ Excluir permanentemente
+            </button>
           </div>
         </div>
 
@@ -834,16 +860,17 @@
             <p>Hooks nativos do Windows (ReadDirectoryChangesW) sincronizam adições, modificações e exclusões na memória</p>
           </div>
           <div class="section-actions">
+            <button id="btnRefreshEventLogs" class="btn btn-secondary btn-sm">Atualizar Eventos</button>
             <button id="btnClearLogs" class="btn btn-secondary btn-sm">Limpar Histórico</button>
           </div>
         </div>
 
-        <div class="watcher-status-card">
+        <div class="watcher-status-card" id="watcherStatusCard">
           <div class="watcher-indicator">
             <span class="pulse-beacon"></span>
             <div>
-              <strong id="watcherStateTitle">Monitoramento Ativo</strong>
-              <p id="watcherStateDesc">Ouvindo alterações nos discos varridos em tempo real</p>
+              <strong id="watcherStateTitle">Monitoramento inativo</strong>
+              <p id="watcherStateDesc">O Monitoramento começa depois de uma Varredura Completa</p>
             </div>
           </div>
         </div>
@@ -865,6 +892,35 @@
             </tbody>
           </table>
         </div>
+
+        <!-- Itens Pulados pela Varredura (/api/logs/skipped) -->
+        <div class="section-header skipped-section-header">
+          <div class="section-title">
+            <h2>Itens Pulados pela Varredura</h2>
+            <p>Pastas e arquivos que a Varredura decidiu não percorrer, sempre com o motivo registrado</p>
+          </div>
+          <div class="section-actions">
+            <span id="skippedCountBadge" class="badge-pill">0 itens</span>
+            <button id="btnRefreshSkipped" class="btn btn-secondary btn-sm">Atualizar Lista</button>
+          </div>
+        </div>
+
+        <div class="event-logs-table-wrapper">
+          <table class="event-logs-table">
+            <thead>
+              <tr>
+                <th style="width: 140px;">Horário</th>
+                <th>Caminho</th>
+                <th style="width: 280px;">Motivo</th>
+              </tr>
+            </thead>
+            <tbody id="skippedItemsTableBody">
+              <tr>
+                <td colspan="3" class="empty-state">Nenhum item pulado registrado nesta execução.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -882,8 +938,8 @@
               <button class="btn btn-sm btn-ai-provider" data-provider="openrouter">
                 <span class="provider-dot" id="openrouterStatusDot"></span> 🌐 OpenRouter (Nuvem)
               </button>
-              <button class="btn btn-sm btn-ai-provider" data-provider="direct">
-                <span class="provider-dot" id="directStatusDot"></span> ⚡ Direto (In-Process)
+              <button class="btn btn-sm btn-ai-provider" data-provider="quick">
+                <span class="provider-dot online" id="quickStatusDot"></span> ⚡ Comandos Rápidos (sem modelo)
               </button>
             </div>
           </div>
@@ -892,7 +948,7 @@
             <span class="ai-control-label">Modelo Selecionado:</span>
             <div class="select-with-btn">
               <select id="aiModelSelect" class="form-select form-select-sm">
-                <option value="qwen2.5:1.5b" selected>Qwen 2.5 (1.5B) - ~1.2 GB RAM (Recomendado)</option>
+                <option value="">Carregando catálogo...</option>
               </select>
               <button id="btnPullSelectedModel" class="btn btn-secondary btn-sm hidden" title="Baixar modelo local no Ollama">
                 ⬇️ Baixar Modelo
@@ -938,8 +994,8 @@
               <div class="ai-welcome-message">
                 <div class="ai-avatar">👁️</div>
                 <div class="ai-bubble">
-                  <h4>Olá! Sou o Assistente Multimodal do ScanFile Pro (Qwen3-VL 8B).</h4>
-                  <p>Equipado com <strong>Visão Computacional e OCR nativos</strong> via Ollama e ferramentas MCP. Posso ler imagens, faturas, certidões, fotos, bancos SQLite e PDFs escaneados, propor limpezas inteligentes com simulação (Dry-Run) e organizar seu disco.</p>
+                  <h4>Olá! Sou o Assistente do ScanFile Pro.</h4>
+                  <p>Com o modelo certo eu leio imagens, faturas, bancos SQLite e PDFs dentro das Raízes Varridas e monto Propostas de limpeza. <strong>Toda Proposta fica pendente até você aprovar na interface</strong>: nenhuma ação é executada por minha conta.</p>
                   <div class="ai-quick-prompts">
                     <button class="ai-prompt-chip" data-prompt="Inspecione visualmente as imagens e fotos desta pasta e resuma o que são">
                       👁️ Inspecionar Imagens &amp; Fotos
@@ -968,7 +1024,7 @@
                 </button>
               </div>
               <div class="ai-input-footer">
-                <span class="ai-footer-hint">🔒 Modo de segurança com <strong>Simulação (Dry-Run)</strong> ativado. Nenhuma alteração real no disco sem sua aprovação.</span>
+                <span class="ai-footer-hint">🔒 Toda Proposta nasce pendente. <strong>Nada é executado sem a sua aprovação explícita</strong> nesta janela.</span>
               </div>
             </div>
           </div>
@@ -976,8 +1032,8 @@
           <!-- Right: Models Catalog (up to 16GB) -->
           <div class="ai-catalog-card">
             <div class="ai-catalog-header">
-              <h4>📚 Catálogo de Modelos (Até 16GB)</h4>
-              <p>Modelos otimizados para Tool Calling e execução local</p>
+              <h4>📚 Catálogo de Modelos (até 14 GB)</h4>
+              <p>Selos de <strong>Visão</strong> e <strong>Ferramentas</strong> indicam o que cada modelo consegue fazer</p>
             </div>
             <div id="aiModelsList" class="ai-models-list">
               <!-- Dynamically rendered via JS -->
@@ -1005,14 +1061,17 @@
         </div>
         <div class="form-group">
           <label for="aiOpenRouterKeyInput">Chave de API do OpenRouter (Opcional):</label>
-          <input type="password" id="aiOpenRouterKeyInput" class="form-input" placeholder="sk-or-v1-...">
-          <small class="form-hint">Necessário apenas se for usar modelos na nuvem como Claude 3.7 ou DeepSeek R1 Full</small>
+          <input type="password" id="aiOpenRouterKeyInput" class="form-input" placeholder="sk-or-v1-..." autocomplete="off">
+          <small class="form-hint" id="aiOpenRouterKeyHint">A chave nunca é devolvida pelo servidor. Deixe em branco para manter a atual.</small>
         </div>
         <div class="form-group">
           <label class="checkbox-label">
             <input type="checkbox" id="aiDryRunDefaultCheckbox" checked>
-            <span>Exigir confirmação prévia com simulação (Dry-Run) antes de qualquer exclusão</span>
+            <span>Exigir confirmação prévia com simulação antes de qualquer exclusão</span>
           </label>
+        </div>
+        <div class="form-group">
+          <button id="btnClearOpenRouterKey" class="btn btn-secondary btn-sm hidden">Remover chave salva</button>
         </div>
       </div>
       <div class="modal-footer">
@@ -1103,9 +1162,90 @@
 
 
 
+  <!-- Confirmação de Reciclagem e Exclusão Permanente (contrato 1.5) -->
+  <div id="confirmActionModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirmActionTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="confirmActionTitle">Confirmar ação</h3>
+        <button class="modal-close-btn" data-close-modal="confirmActionModal" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="confirmActionDesc"></p>
+
+        <div class="confirm-summary-grid">
+          <div class="confirm-summary-item">
+            <span>Itens selecionados</span>
+            <strong id="confirmActionCount">0</strong>
+          </div>
+          <div class="confirm-summary-item">
+            <span>Tamanho total</span>
+            <strong id="confirmActionSize">0 B</strong>
+          </div>
+          <div class="confirm-summary-item hidden" id="confirmActionFilesBox">
+            <span>Arquivos contidos</span>
+            <strong id="confirmActionFiles">0</strong>
+          </div>
+        </div>
+
+        <div class="confirm-target-list" id="confirmActionList"></div>
+
+        <div class="form-group hidden" id="confirmActionInputGroup">
+          <label for="confirmActionInput" id="confirmActionInputLabel">Digite para confirmar:</label>
+          <input type="text" id="confirmActionInput" class="form-input" autocomplete="off" spellcheck="false">
+          <small class="form-hint" id="confirmActionInputHint"></small>
+        </div>
+
+        <div class="alert alert-danger hidden" id="confirmActionError"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal="confirmActionModal">Cancelar</button>
+        <button id="btnConfirmAction" class="btn btn-danger">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resultado por item de Reciclagem / Exclusão Permanente -->
+  <div id="actionResultsModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="actionResultsTitle">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3 id="actionResultsTitle">Resultado da operação</h3>
+        <button class="modal-close-btn" data-close-modal="actionResultsModal" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="dup-summary-banner" id="actionResultsSummary"></div>
+        <div class="event-logs-table-wrapper">
+          <table class="event-logs-table">
+            <thead>
+              <tr>
+                <th style="width: 140px;">Situação</th>
+                <th>Caminho</th>
+                <th style="width: 300px;">Motivo</th>
+              </tr>
+            </thead>
+            <tbody id="actionResultsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal="actionResultsModal">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sessão inválida: aviso bloqueante (contrato 1.1) -->
+  <div id="sessionInvalidOverlay" class="session-invalid-overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="sessionInvalidTitle">
+    <div class="session-invalid-card">
+      <div class="session-invalid-icon">🔒</div>
+      <h2 id="sessionInvalidTitle">Sessão inválida, reabra o ScanFile</h2>
+      <p>O token desta janela não é mais aceito pelo servidor local. Feche esta janela e abra o ScanFile novamente para criar uma nova Sessão.</p>
+    </div>
+  </div>
+
+
   <!-- Action Modal / Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
+  <script src="js/core.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
