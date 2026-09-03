@@ -114,7 +114,7 @@ func (s *AppServer) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	s.AIAgent.OllamaClient = ai.NewOllamaClient(cfg.AIOllamaEndpoint)
 	s.AIAgent.OpenRouter = ai.NewOpenRouterClient(config.OpenRouterKey(cfg))
 
-	systemPrompt := ai.BuildSystemPrompt(s.Tree, s.Index, req.SelectedFolder)
+	systemPrompt := ai.BuildSystemPrompt(s.Tree(), s.Index, req.SelectedFolder)
 
 	// Stream responses via SSE
 	w.Header().Set("Content-Type", "text/event-stream")

@@ -8,10 +8,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"scanfile/pkg/ai"
@@ -25,7 +28,6 @@ import (
 
 // AppServer orchestrates the REST & SSE API for the ScanFile application.
 type AppServer struct {
-	Tree        *scanner.TreeManager
 	Scanner     *scanner.Scanner
 	Hasher      *HasherManager
 	Index       *indexer.DuplicateIndex
@@ -36,6 +38,13 @@ type AppServer struct {
 	uiFS        fs.FS
 	httpServer  *http.Server
 	listener    net.Listener
+
+	// stateMu protege a árvore ativa, as Raízes Varridas e a Configuração da
+	// última Varredura. Quem escreve (iniciar Varredura, adotar Snapshot) não é
+	// quem lê: o relógio do Autosave, rescanRoot, a Reciclagem e a gravação de
+	// Snapshot leem de goroutines próprias. Use os acessores, nunca os campos.
+	stateMu     sync.RWMutex
+	tree        *scanner.TreeManager
 	activeRoots []string
 	lastConfig  scanner.ScanConfig
 
@@ -56,9 +65,14 @@ type AppServer struct {
 	shutdownWhenDone bool
 
 	// Varredura em curso (etapa 2, contrato 1.2 e 1.7)
-	scanMu             sync.Mutex
-	scanCancel         context.CancelFunc
-	scanDone           chan struct{}
+	scanMu     sync.Mutex
+	scanCancel context.CancelFunc
+	scanDone   chan struct{}
+
+	// autosaveWriteMu serializa a gravação em disco. É separado de autosaveMu
+	// de propósito: aquele guarda o estado do relógio em seções curtas e é
+	// tomado DENTRO desta gravação para publicar o novo instante-base.
+	autosaveWriteMu    sync.Mutex
 	autosaveMu         sync.Mutex
 	lastAutoSaveChange uint64
 	lastAutoSaveAt     time.Time
@@ -193,7 +207,7 @@ func NewAppServer(uiFS fs.FS) *AppServer {
 	)
 
 	return &AppServer{
-		Tree:          tree,
+		tree:          tree,
 		Scanner:       sc,
 		Hasher:        &HasherManager{Engine: hEngine},
 		Index:         idx,
@@ -328,6 +342,41 @@ func (s *AppServer) setPhase(phase, message string) {
 	})
 }
 
+// Tree devolve a árvore ativa. Nil só antes de o servidor ser construído.
+func (s *AppServer) Tree() *scanner.TreeManager {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.tree
+}
+
+// lastScanConfig devolve a Configuração da última Varredura ou do último
+// Snapshot adotado.
+func (s *AppServer) lastScanConfig() scanner.ScanConfig {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.lastConfig
+}
+
+// setScanState publica as Raízes Varridas e a Configuração de uma Varredura que
+// começa agora. A árvore não muda: a Varredura escreve na que já está ativa.
+func (s *AppServer) setScanState(roots []string, cfg scanner.ScanConfig) {
+	s.stateMu.Lock()
+	s.activeRoots = append([]string(nil), roots...)
+	s.lastConfig = cfg
+	s.stateMu.Unlock()
+}
+
+// adoptTree troca a árvore ativa junto com as Raízes e a Configuração que a
+// descrevem. Os três andam juntos: um leitor nunca pode encontrar a árvore nova
+// com as Raízes da anterior.
+func (s *AppServer) adoptTree(tm *scanner.TreeManager, roots []string, cfg scanner.ScanConfig) {
+	s.stateMu.Lock()
+	s.tree = tm
+	s.activeRoots = append([]string(nil), roots...)
+	s.lastConfig = cfg
+	s.stateMu.Unlock()
+}
+
 // changeSignal resume "algo mudou na árvore desde o último Autosave".
 //
 // O sinal soma o contador do TreeManager com o do Monitoramento porque
@@ -336,8 +385,8 @@ func (s *AppServer) setPhase(phase, message string) {
 // com Monitoramento ativo nunca gravaria.
 func (s *AppServer) changeSignal() uint64 {
 	var sig uint64
-	if s.Tree != nil {
-		sig += s.Tree.ChangeCounter()
+	if tree := s.Tree(); tree != nil {
+		sig += tree.ChangeCounter()
 	}
 	if fw := s.currentWatcher(); fw != nil {
 		sig += fw.ChangeCount()
@@ -485,18 +534,80 @@ func (s *AppServer) maybeAutoSave(now time.Time) bool {
 	return s.writeAutoSave(cfg, now)
 }
 
+// autosaveTempSeq numera os arquivos temporários do Autosave. Duas gravações
+// nunca compartilham o mesmo temporário nem que escapem da exclusão mútua.
+var autosaveTempSeq atomic.Uint64
+
+// saveAutoSaveSnapshot grava o Autosave num arquivo temporário exclusivo desta
+// gravação e só então o promove a autosave_latest.sfz, rotacionando o anterior
+// para autosave_previous.sfz.
+//
+// A rotação vive aqui, e não em scanner.SaveAutoSave, porque aquela função
+// sempre passa pelo mesmo "autosave_temp.sfz": duas gravações simultâneas
+// truncavam o fluxo gzip uma da outra e a que perdesse a corrida levava o
+// último backup bom junto.
+func (s *AppServer) saveAutoSaveSnapshot(tm *scanner.TreeManager, roots []string, cfg scanner.ScanConfig) (string, error) {
+	dir := s.autoSaveDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("falha ao criar pasta de autosave: %w", err)
+	}
+
+	// A extensão ".tmp" mantém um temporário órfão (queda no meio da gravação)
+	// fora da lista de Snapshots, que só reconhece .sfz e afins.
+	tempPath := filepath.Join(dir, fmt.Sprintf("autosave_temp_%d_%d.tmp", os.Getpid(), autosaveTempSeq.Add(1)))
+	latestPath := filepath.Join(dir, scanner.DefaultAutoSaveFileName)
+	backupPath := filepath.Join(dir, scanner.BackupAutoSaveFileName)
+
+	if err := scanner.SaveCacheToFile(tm, roots, cfg, tempPath); err != nil {
+		_ = os.Remove(tempPath)
+		return "", fmt.Errorf("falha ao serializar autosave: %w", err)
+	}
+
+	if _, err := os.Stat(latestPath); err == nil {
+		_ = os.Remove(backupPath)
+		_ = os.Rename(latestPath, backupPath)
+	}
+
+	if err := os.Rename(tempPath, latestPath); err != nil {
+		// O Windows recusa o rename enquanto alguém mantém o destino aberto;
+		// nesse caso a cópia byte a byte ainda entrega um arquivo completo.
+		data, readErr := os.ReadFile(tempPath)
+		if readErr != nil {
+			_ = os.Remove(tempPath)
+			return "", fmt.Errorf("falha ao finalizar autosave atômico: %w", err)
+		}
+		if writeErr := os.WriteFile(latestPath, data, 0o644); writeErr != nil {
+			_ = os.Remove(tempPath)
+			return "", fmt.Errorf("falha ao finalizar autosave atômico: %w", writeErr)
+		}
+		_ = os.Remove(tempPath)
+	}
+
+	return latestPath, nil
+}
+
 // writeAutoSave grava o Autosave agora, atualiza o status e avisa a interface.
 // Nunca grava durante ou depois de um Cancelamento (contrato 1.2).
+//
+// Uma gravação por vez: o relógio do Autosave e as fronteiras de fase da
+// orquestração chamam este método de goroutines diferentes.
 func (s *AppServer) writeAutoSave(cfg scanner.ScanConfig, now time.Time) bool {
+	s.autosaveWriteMu.Lock()
+	defer s.autosaveWriteMu.Unlock()
+
+	// A fase é relida DEPOIS de entrar na fila: um Cancelamento pedido enquanto
+	// esta gravação esperava a anterior cancela também esta.
 	switch s.currentPhase() {
 	case PhaseCancelling, PhaseCancelled:
 		return false
 	}
-	if s.Tree == nil || s.Tree.GetTotalFileCount() == 0 {
+
+	tree := s.Tree()
+	if tree == nil || tree.GetTotalFileCount() == 0 {
 		return false
 	}
 
-	savedPath, err := scanner.SaveAutoSave(s.Tree, s.activeRoots, cfg, s.autoSaveDir())
+	savedPath, err := s.saveAutoSaveSnapshot(tree, s.scanRoots(), cfg)
 	if err != nil {
 		if DebugMode {
 			log.Printf("[AUTOSAVE] falha ao gravar: %v\n", err)

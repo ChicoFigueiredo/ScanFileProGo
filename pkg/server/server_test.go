@@ -3,6 +3,8 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +15,7 @@ import (
 func seedTree(t *testing.T, app *AppServer, name string) {
 	t.Helper()
 	dir := filepath.Join(tempDir(t), "raiz")
-	app.Tree.AddFile(scanner.NewFileNodeAt(filepath.Join(dir, name), scanner.FileMeta{Name: name, Size: 1024, Extension: ".bin", ModTime: 1700000000}))
+	app.Tree().AddFile(scanner.NewFileNodeAt(filepath.Join(dir, name), scanner.FileMeta{Name: name, Size: 1024, Extension: ".bin", ModTime: 1700000000}))
 }
 
 func TestAutoSaveDuringScanRespectsInterval(t *testing.T) {
@@ -149,5 +151,78 @@ func TestGetLiveMemoryStats(t *testing.T) {
 	}
 	if stats.Goroutines <= 0 {
 		t.Errorf("goroutines = %d, esperado > 0", stats.Goroutines)
+	}
+}
+
+// TestConcurrentAutoSaveWritesKeepSnapshotValid prova que duas gravações de
+// Autosave ao mesmo tempo — o relógio do Autosave e a fronteira de fase da
+// orquestração — não truncam uma o fluxo gzip da outra nem rodam o último
+// backup bom para fora. É o mesmo tipo de defeito do achado C4, que já custou
+// os dois Autosaves.
+func TestConcurrentAutoSaveWritesKeepSnapshotValid(t *testing.T) {
+	app, _ := newScanTestServer(t)
+
+	const wantFiles = 3000
+	dir := filepath.Join(tempDir(t), "raiz")
+	fillDir(t, app, dir, wantFiles)
+	app.setScanState([]string{dir}, scanner.ScanConfig{Roots: []string{dir}})
+
+	cfg := scanner.ScanConfig{Roots: []string{dir}, HashAlgorithm: "xxhash"}
+	app.setPhase(PhaseWatching, "")
+
+	const writers = 8
+	wrote := make([]bool, writers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			wrote[idx] = app.writeAutoSave(cfg, time.Now())
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, ok := range wrote {
+		if !ok {
+			t.Errorf("a gravação concorrente %d do Autosave falhou", i)
+		}
+	}
+
+	// O Autosave final abre como gzip válido e traz a árvore inteira.
+	latest := filepath.Join(app.savedScansDir, scanner.DefaultAutoSaveFileName)
+	tm, summary, err := scanner.LoadCacheSummaryFromFile(latest, nil)
+	if err != nil {
+		t.Fatalf("o Autosave final não abre depois das gravações concorrentes: %v", err)
+	}
+	if summary.TotalFiles != wantFiles {
+		t.Errorf("totalFiles no Autosave = %d, esperado %d", summary.TotalFiles, wantFiles)
+	}
+	if got := tm.GetTotalFileCount(); got != wantFiles {
+		t.Errorf("a árvore relida tem %d arquivos, esperado %d", got, wantFiles)
+	}
+
+	// O backup rotacionado também precisa continuar legível: é ele o último
+	// Autosave bom se o mais recente se perder.
+	backup := filepath.Join(app.savedScansDir, scanner.BackupAutoSaveFileName)
+	if _, statErr := os.Stat(backup); statErr == nil {
+		if _, backupSummary, loadErr := scanner.LoadCacheSummaryFromFile(backup, nil); loadErr != nil {
+			t.Errorf("o backup rotacionado ficou corrompido: %v", loadErr)
+		} else if backupSummary.TotalFiles != wantFiles {
+			t.Errorf("totalFiles no backup = %d, esperado %d", backupSummary.TotalFiles, wantFiles)
+		}
+	}
+
+	// E nenhuma gravação deixou arquivo temporário para trás.
+	entries, err := os.ReadDir(app.savedScansDir)
+	if err != nil {
+		t.Fatalf("não foi possível listar a pasta de Snapshots: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "temp") {
+			t.Errorf("sobrou um temporário de Autosave na pasta: %s", e.Name())
+		}
 	}
 }

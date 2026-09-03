@@ -9,8 +9,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
+	"weak"
 
 	"scanfile/pkg/scanner"
 )
@@ -259,7 +262,7 @@ func TestFullScanReportsWorkerThreads(t *testing.T) {
 func fillDir(t *testing.T, app *AppServer, dir string, count int) {
 	t.Helper()
 	for i := 0; i < count; i++ {
-		app.Tree.AddFile(scanner.NewFileNodeAt(filepath.Join(dir, fmt.Sprintf("f%04d.bin", i)), scanner.FileMeta{Name: fmt.Sprintf("f%04d.bin", i), Size: int64(i + 1), Extension: ".bin", ModTime: int64(1700000000 + i)}))
+		app.Tree().AddFile(scanner.NewFileNodeAt(filepath.Join(dir, fmt.Sprintf("f%04d.bin", i)), scanner.FileMeta{Name: fmt.Sprintf("f%04d.bin", i), Size: int64(i + 1), Extension: ".bin", ModTime: int64(1700000000 + i)}))
 	}
 }
 
@@ -403,4 +406,184 @@ func urlValue(v string) string {
 		}
 	}
 	return string(out)
+}
+
+// TestScanStateHasNoDataRaceBetweenReadersAndWriters exercita, ao mesmo tempo,
+// quem escreve a árvore ativa, as Raízes Varridas e a última Configuração
+// (iniciar Varredura, carregar Snapshot) e quem as lê de outras goroutines (o
+// relógio do Autosave, a Reciclagem e a gravação de Snapshot). Com -race, uma
+// escrita sem lock reprova o teste.
+func TestScanStateHasNoDataRaceBetweenReadersAndWriters(t *testing.T) {
+	root := scanRootWithFiles(t, 2)
+	app, ts := newScanTestServer(t)
+	app.scanBarrier = testBarrier(app, nil)
+
+	snapshotRoot := tempDir(t)
+	snapshot := filepath.Join(app.savedScansDir, "concorrente.scanfile.gz")
+	if err := scanner.SaveCacheToFile(buildSnapshotTree(t, snapshotRoot), []string{snapshotRoot}, scanner.ScanConfig{Roots: []string{snapshotRoot}}, snapshot); err != nil {
+		t.Fatalf("não foi possível gravar o Snapshot de teste: %v", err)
+	}
+
+	// MinSizeForHash acima do tamanho dos arquivos deixa a Fase 2 sem nenhum
+	// candidato. Não é conveniência: com o Hash Completo em curso, serializar um
+	// Snapshot corre contra FileNode.ensureDigest em pkg/scanner, um defeito
+	// alheio a este pacote que abafaria o que este teste mede.
+	cfg := scanner.ScanConfig{Roots: []string{root}, WorkerThreads: 1, LogDir: tempDir(t), MinSizeForHash: 1 << 30}
+
+	post := func(path string, body any) {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return
+		}
+		resp, err := ts.Client().Post(ts.URL+path, "application/json", bytes.NewReader(payload))
+		if err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	readers := []func(){
+		func() { _ = app.scanRoots() },
+		func() { app.writeAutoSave(cfg, time.Now()) },
+		func() { post("/api/cache/save", SaveCacheReq{FileName: "leitura.scanfile.gz"}) },
+	}
+	for _, read := range readers {
+		wg.Add(1)
+		go func(read func()) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				read()
+				time.Sleep(time.Millisecond)
+			}
+		}(read)
+	}
+
+	for i := 0; i < 30; i++ {
+		post("/api/scan/start", cfg)
+		post("/api/cache/load", LoadCacheReq{FilePath: snapshot})
+	}
+	close(stop)
+	wg.Wait()
+
+	waitScanIdle(t, app, 30*time.Second)
+	app.StopBackground()
+}
+
+// heapAllocBytes devolve o heap vivo depois de uma coleta.
+func heapAllocBytes() uint64 {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.HeapAlloc
+}
+
+// weakFileRef guarda uma referência fraca a um nó da árvore. O nó só continua
+// vivo se alguém no processo ainda o segurar de verdade.
+func weakFileRef(t *testing.T, app *AppServer, path string) weak.Pointer[scanner.FileNode] {
+	t.Helper()
+	node := app.Tree().FindFile(path)
+	if node == nil {
+		t.Fatalf("o arquivo %s não entrou na árvore anterior", path)
+	}
+	return weak.Make(node)
+}
+
+// TestQuickScanLookupIsReleasedAfterScan prova que o índice do Quick Scan, que
+// sai da árvore anterior, é liberado ao fim da Varredura. Preso no motor, ele
+// segura a árvore anterior inteira — até 50 milhões de nós — pelo resto da
+// sessão, desfazendo parte do ganho do ADR-0001.
+func TestQuickScanLookupIsReleasedAfterScan(t *testing.T) {
+	root := tempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "novo.bin"), []byte("conteudo"), 0o644); err != nil {
+		t.Fatalf("não foi possível criar o arquivo da nova Varredura: %v", err)
+	}
+
+	app, ts := newScanTestServer(t)
+	app.scanBarrier = testBarrier(app, nil)
+
+	const previousFiles = 50000
+	previousDir := filepath.Join(tempDir(t), "anterior")
+	emptyHeap := heapAllocBytes()
+	fillDir(t, app, previousDir, previousFiles)
+
+	withPreviousTree := heapAllocBytes()
+	held := weakFileRef(t, app, filepath.Join(previousDir, "f0000.bin"))
+
+	resp := postJSON(t, ts, "/api/scan/start", scanner.ScanConfig{
+		Roots:         []string{root},
+		WorkerThreads: 1,
+		LogDir:        tempDir(t),
+		QuickScanMode: true,
+	})
+	resp.Body.Close()
+
+	waitScanIdle(t, app, 30*time.Second)
+	app.StopBackground()
+
+	runtime.GC()
+	runtime.GC()
+
+	afterScan := heapAllocBytes()
+	mb := func(v uint64) float64 { return float64(v) / (1 << 20) }
+	t.Logf("heap com %d nós: %.1f MB vazio, %.1f MB com a árvore anterior, %.1f MB depois da Varredura (%.0f bytes por nó liberados)",
+		previousFiles, mb(emptyHeap), mb(withPreviousTree), mb(afterScan),
+		(float64(withPreviousTree)-float64(afterScan))/previousFiles)
+
+	if held.Value() != nil {
+		t.Error("o índice do Quick Scan continuou preso ao motor, segurando a árvore anterior inteira")
+	}
+}
+
+// TestRescanRootRestoresPhaseWhenScanFails prova que uma revarredura de raiz que
+// não chega ao fim devolve a fase a um estado coerente. Presa em
+// "phase1_metadata", toda Varredura e todo carregamento de Snapshot passariam a
+// responder 409 até o usuário apertar Cancelar.
+func TestRescanRootRestoresPhaseWhenScanFails(t *testing.T) {
+	root := scanRootWithFiles(t, 2)
+	app, ts := newScanTestServer(t)
+
+	// Estado de partida: Monitoramento ativo, que é de onde vem o estouro do
+	// buffer de notificações.
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}, WorkerThreads: 1, LogDir: tempDir(t)})
+	app.setPhase(PhaseWatching, "")
+
+	// O seam aborta a revarredura antes da Fase 1: StartScan publica
+	// "phase1_metadata" e devolve context.Canceled em seguida.
+	app.scanBarrier = func(stage string) {
+		if stage != stageRescan {
+			return
+		}
+		app.scanMu.Lock()
+		cancel := app.scanCancel
+		app.scanMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}
+
+	app.rescanRoot(root)
+	waitScanIdle(t, app, 20*time.Second)
+
+	if phase := app.currentPhase(); isBusyPhase(phase) {
+		t.Errorf("a fase ficou presa em %q depois de a revarredura falhar", phase)
+	}
+
+	// E a interface volta a aceitar uma Varredura nova.
+	app.scanBarrier = testBarrier(app, nil)
+	resp := postJSON(t, ts, "/api/scan/start", scanner.ScanConfig{Roots: []string{root}, WorkerThreads: 1, LogDir: tempDir(t), MinSizeForHash: 1 << 30})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("iniciar Varredura depois da revarredura falha devolveu %d, esperado 200", resp.StatusCode)
+	}
+	waitScanIdle(t, app, 30*time.Second)
+	app.StopBackground()
 }

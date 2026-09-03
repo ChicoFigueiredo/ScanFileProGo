@@ -31,10 +31,21 @@ func (s *AppServer) handleGetAutoSaveStatus(w http.ResponseWriter, r *http.Reque
 // A troca também alcança s.Scanner.Tree e s.MCPContext.Tree: sem isso a próxima
 // Varredura continuava escrevendo na árvore antiga (achado C4) e o Assistente
 // consultava um retrato que a interface não mostra mais.
+//
+// O Monitoramento para ANTES da troca. Ele capturou o TreeManager e os índices
+// no momento em que subiu; como "watching" não é fase ocupada, carregar um
+// Snapshot durante o Monitoramento o deixaria alterando a árvore descartada
+// enquanto escreve no índice de duplicados recém-reconstruído. Religá-lo sobre
+// as Raízes do Snapshot NÃO é automático: elas podem não existir nesta máquina
+// (Snapshot trazido de outro disco ou de outro computador) e o desfecho
+// publicado por estes handlers é "completed", não "watching". Quem quiser
+// Monitoramento outra vez inicia uma Varredura.
 func (s *AppServer) adoptSnapshot(tm *scanner.TreeManager, summary *scanner.CacheSnapshotSummary, progress func(percent float64, message string)) (grpCount, fileCount int, wasted int64, fGrpCount, fCount int, fWasted int64) {
+	s.stopWatcher()
+
 	progress(88, "Reconstruindo índice de arquivos duplicados por hash...")
 
-	s.Tree = tm
+	s.adoptTree(tm, summary.Roots, summary.ScanSettings)
 	s.Scanner.Tree = tm
 	if s.MCPContext != nil {
 		s.MCPContext.Tree = tm
@@ -42,15 +53,13 @@ func (s *AppServer) adoptSnapshot(tm *scanner.TreeManager, summary *scanner.Cach
 		// (contrato 1.11).
 		s.MCPContext.SetAllowedRoots(summary.Roots)
 	}
-	s.activeRoots = summary.Roots
-	s.lastConfig = summary.ScanSettings
 
-	s.Index.RebuildIndex(s.Tree.GetAllFiles())
+	s.Index.RebuildIndex(tm.GetAllFiles())
 	grpCount, fileCount, wasted = s.Index.GetSummaryStats()
 
 	progress(95, "Identificando e classificando pastas clones...")
 
-	s.FolderIndex.RebuildFolderIndex(s.Tree)
+	s.FolderIndex.RebuildFolderIndex(tm)
 	fGrpCount, fCount, fWasted = s.FolderIndex.GetSummaryStats()
 
 	return grpCount, fileCount, wasted, fGrpCount, fCount, fWasted
@@ -156,7 +165,7 @@ func (s *AppServer) handleSaveCache(w http.ResponseWriter, r *http.Request) {
 		targetPath = filepath.Join(s.autoSaveDir(), fileName)
 	}
 
-	err := scanner.SaveCacheToFile(s.Tree, s.activeRoots, s.lastConfig, targetPath)
+	err := scanner.SaveCacheToFile(s.Tree(), s.scanRoots(), s.lastScanConfig(), targetPath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Erro ao salvar cache: %v", err), http.StatusInternalServerError)
 		return
