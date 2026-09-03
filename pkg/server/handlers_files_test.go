@@ -55,7 +55,7 @@ func writeTempFile(t *testing.T, dir, name string, size int) string {
 // would.
 func indexFile(app *AppServer, path string, size int64, hash string) *scanner.FileNode {
 	node := scanner.NewFileNodeAt(path, scanner.FileMeta{Name: filepath.Base(path), Size: size, Hash: hash, Extension: strings.ToLower(filepath.Ext(path))})
-	app.Tree.AddFile(node)
+	app.Tree().AddFile(node)
 	app.Index.UpsertFile(node)
 	return node
 }
@@ -84,7 +84,7 @@ func TestRecycleRefusesPathOutsideRoots(t *testing.T) {
 	scanned := tempDir(t)
 	outside := tempDir(t)
 	victim := writeTempFile(t, outside, "fora.bin", 16)
-	app.activeRoots = []string{scanned}
+	app.setScanState([]string{scanned}, scanner.ScanConfig{Roots: []string{scanned}})
 
 	res, decoded := postFileAction(t, app, ts, "/api/files/recycle", map[string]any{
 		"paths":       []string{victim},
@@ -138,7 +138,7 @@ func TestRecycleRefusesProtectedFolderEvenInsideRoots(t *testing.T) {
 	useTempConfig(t, offlineConfig())
 
 	app, ts := newTestServer(t)
-	app.activeRoots = []string{`C:\`}
+	app.setScanState([]string{`C:\`}, scanner.ScanConfig{Roots: []string{`C:\`}})
 
 	_, decoded := postFileAction(t, app, ts, "/api/files/recycle", map[string]any{
 		"paths":       []string{`C:\Windows\explorer.exe`},
@@ -164,7 +164,7 @@ func TestFolderNeedsMatchingConfirmName(t *testing.T) {
 		t.Fatalf("não foi possível criar a pasta: %v", err)
 	}
 	writeTempFile(t, folder, "a.jpg", 32)
-	app.activeRoots = []string{root}
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}})
 
 	for _, confirm := range []string{"", "Outra", "Fotos2"} {
 		_, decoded := postFileAction(t, app, ts, "/api/files/recycle", map[string]any{
@@ -191,7 +191,7 @@ func TestDeleteRequiresTheTypedWord(t *testing.T) {
 	app, ts := newTestServer(t)
 	root := tempDir(t)
 	victim := writeTempFile(t, root, "importante.bin", 64)
-	app.activeRoots = []string{root}
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}})
 
 	for _, confirm := range []string{"", "excluir", "EXCLUI", "APAGAR"} {
 		res, _ := postFileAction(t, app, ts, "/api/files/delete", map[string]any{
@@ -215,7 +215,7 @@ func TestDeleteRemovesFileFromTreeAndIndex(t *testing.T) {
 	root := tempDir(t)
 	victim := writeTempFile(t, root, "copia-1.bin", 4096)
 	twin := writeTempFile(t, root, "copia-2.bin", 4096)
-	app.activeRoots = []string{root}
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}})
 
 	indexFile(app, victim, 4096, "xxh64:abcdef")
 	indexFile(app, twin, 4096, "xxh64:abcdef")
@@ -244,10 +244,10 @@ func TestDeleteRemovesFileFromTreeAndIndex(t *testing.T) {
 	if _, err := os.Stat(victim); !os.IsNotExist(err) {
 		t.Fatalf("o arquivo continua no disco (err = %v)", err)
 	}
-	if app.Tree.FindFile(victim) != nil {
+	if app.Tree().FindFile(victim) != nil {
 		t.Fatal("o arquivo excluído continua na árvore")
 	}
-	if app.Tree.FindFile(twin) == nil {
+	if app.Tree().FindFile(twin) == nil {
 		t.Fatal("a cópia que não foi excluída sumiu da árvore")
 	}
 	if groups, files, wasted := app.Index.GetSummaryStats(); groups != 0 || files != 0 || wasted != 0 {
@@ -266,10 +266,10 @@ func TestDeleteFolderWithConfirmNameRemovesSubtree(t *testing.T) {
 		t.Fatalf("não foi possível criar a pasta: %v", err)
 	}
 	inside := writeTempFile(t, folder, "dump.bin", 2048)
-	app.activeRoots = []string{root}
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}})
 
 	indexFile(app, inside, 2048, "xxh64:112233")
-	app.Tree.EnsureDirNode(folder)
+	app.Tree().EnsureDirNode(folder)
 
 	res, decoded := postFileAction(t, app, ts, "/api/files/delete", map[string]any{
 		"paths":       []string{folder},
@@ -286,10 +286,10 @@ func TestDeleteFolderWithConfirmNameRemovesSubtree(t *testing.T) {
 	if _, err := os.Stat(folder); !os.IsNotExist(err) {
 		t.Fatalf("a pasta continua no disco (err = %v)", err)
 	}
-	if app.Tree.FindDir(folder) != nil {
+	if app.Tree().FindDir(folder) != nil {
 		t.Fatal("a pasta excluída continua na árvore")
 	}
-	if app.Tree.FindFile(inside) != nil {
+	if app.Tree().FindFile(inside) != nil {
 		t.Fatal("o arquivo dentro da pasta excluída continua na árvore")
 	}
 }
@@ -306,7 +306,7 @@ func TestFileActionKeepsRequestOrderAndMixesOutcomes(t *testing.T) {
 	}
 	ok := writeTempFile(t, root, "ok.bin", 128)
 	missing := filepath.Join(root, "nunca-existiu.bin")
-	app.activeRoots = []string{root}
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}})
 
 	_, decoded := postFileAction(t, app, ts, "/api/files/delete", map[string]any{
 		"paths":       []string{outside, ok, missing},
@@ -362,7 +362,7 @@ func TestScopedRecycleRefusesOutsideRootsForTheAssistant(t *testing.T) {
 	app, _ := newTestServer(t)
 	root := tempDir(t)
 	outside := writeTempFile(t, tempDir(t), "fora.bin", 8)
-	app.activeRoots = []string{root}
+	app.setScanState([]string{root}, scanner.ScanConfig{Roots: []string{root}})
 
 	if app.MCPContext.RecycleFunc == nil {
 		t.Fatal("o Assistente não recebeu a RecycleFunc com escopo")

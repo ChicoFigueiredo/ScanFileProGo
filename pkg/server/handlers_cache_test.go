@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestRestoreAutoSaveReturnsSummaryAndSwapsScannerTree(t *testing.T) {
 		t.Fatalf("não foi possível gravar o Autosave de teste: %v", err)
 	}
 
-	previousTree := app.Tree
+	previousTree := app.Tree()
 
 	resp := postJSON(t, ts, "/api/cache/autosave/restore", nil)
 	defer resp.Body.Close()
@@ -82,13 +83,13 @@ func TestRestoreAutoSaveReturnsSummaryAndSwapsScannerTree(t *testing.T) {
 	}
 
 	// A árvore ativa foi trocada em TODOS os lugares (achado C4).
-	if app.Tree == previousTree {
+	if app.Tree() == previousTree {
 		t.Error("a árvore ativa não foi substituída")
 	}
-	if app.Scanner.Tree != app.Tree {
+	if app.Scanner.Tree != app.Tree() {
 		t.Error("Scanner.Tree continuou apontando para a árvore antiga (achado C4)")
 	}
-	if app.MCPContext != nil && app.MCPContext.Tree != app.Tree {
+	if app.MCPContext != nil && app.MCPContext.Tree != app.Tree() {
 		t.Error("MCPContext.Tree continuou apontando para a árvore antiga")
 	}
 
@@ -139,7 +140,7 @@ func TestLoadCacheReturnsSummaryNotFileList(t *testing.T) {
 	if summary.TotalFiles != 3 {
 		t.Errorf("totalFiles = %d, esperado 3", summary.TotalFiles)
 	}
-	if app.Scanner.Tree != app.Tree {
+	if app.Scanner.Tree != app.Tree() {
 		t.Error("Scanner.Tree continuou apontando para a árvore antiga (achado C4)")
 	}
 	if got := app.MCPContext.AllowedRoots(); len(got) != 1 || got[0] != root {
@@ -173,4 +174,80 @@ func TestLoadCacheDuringScanReturns409(t *testing.T) {
 	// O Monitoramento segura um descritor da raiz temporária; desligá-lo aqui
 	// deixa a limpeza do t.TempDir apagar a pasta.
 	app.StopBackground()
+}
+
+// TestLoadCacheStopsWatcherBeforeSwappingTree prova que carregar um Snapshot com
+// o Monitoramento ativo desliga o observador. Sem isso ele continuaria vivo
+// sobre a árvore descartada, escrevendo nela e no índice de duplicados
+// recém-reconstruído — e "watching" não é fase ocupada, então o carregamento
+// nem sequer é recusado com 409.
+func TestLoadCacheStopsWatcherBeforeSwappingTree(t *testing.T) {
+	watchRoot := tempDir(t)
+	if err := os.WriteFile(filepath.Join(watchRoot, "a.bin"), []byte("conteudo"), 0o644); err != nil {
+		t.Fatalf("não foi possível criar o arquivo observado: %v", err)
+	}
+
+	app, ts := newScanTestServer(t)
+
+	// Sobe o Monitoramento como o fim da Varredura faz.
+	app.startWatching(scanner.ScanConfig{Roots: []string{watchRoot}, HashAlgorithm: "xxhash"})
+	if app.currentWatcher() == nil {
+		t.Skip("o Monitoramento não subiu nesta plataforma")
+	}
+	if app.currentPhase() != PhaseWatching {
+		t.Fatalf("fase antes do carregamento = %q, esperado %q", app.currentPhase(), PhaseWatching)
+	}
+
+	snapshotRoot := tempDir(t)
+	target := filepath.Join(app.savedScansDir, "snapshot.scanfile.gz")
+	if err := scanner.SaveCacheToFile(buildSnapshotTree(t, snapshotRoot), []string{snapshotRoot}, scanner.ScanConfig{Roots: []string{snapshotRoot}}, target); err != nil {
+		t.Fatalf("não foi possível gravar o Snapshot de teste: %v", err)
+	}
+
+	resp := postJSON(t, ts, "/api/cache/load", LoadCacheReq{FilePath: target})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("load devolveu %d, esperado 200", resp.StatusCode)
+	}
+
+	if app.currentWatcher() != nil {
+		t.Error("o Monitoramento continuou ativo sobre a árvore descartada depois de carregar o Snapshot")
+	}
+
+	var status scanner.ScanStatus
+	getJSON(t, ts, "/api/scan/status", &status)
+	if status.IsWatching {
+		t.Error("o status continuou anunciando Monitoramento ativo depois de carregar o Snapshot")
+	}
+}
+
+// TestRestoreAutoSaveStopsWatcher cobre o mesmo defeito pelo outro handler que
+// adota uma árvore nova.
+func TestRestoreAutoSaveStopsWatcher(t *testing.T) {
+	watchRoot := tempDir(t)
+	if err := os.WriteFile(filepath.Join(watchRoot, "a.bin"), []byte("conteudo"), 0o644); err != nil {
+		t.Fatalf("não foi possível criar o arquivo observado: %v", err)
+	}
+
+	app, ts := newScanTestServer(t)
+
+	snapshotRoot := tempDir(t)
+	if _, err := scanner.SaveAutoSave(buildSnapshotTree(t, snapshotRoot), []string{snapshotRoot}, scanner.ScanConfig{Roots: []string{snapshotRoot}}, app.savedScansDir); err != nil {
+		t.Fatalf("não foi possível gravar o Autosave de teste: %v", err)
+	}
+
+	app.startWatching(scanner.ScanConfig{Roots: []string{watchRoot}, HashAlgorithm: "xxhash"})
+	if app.currentWatcher() == nil {
+		t.Skip("o Monitoramento não subiu nesta plataforma")
+	}
+
+	resp := postJSON(t, ts, "/api/cache/autosave/restore", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restore devolveu %d, esperado 200", resp.StatusCode)
+	}
+
+	if app.currentWatcher() != nil {
+		t.Error("o Monitoramento continuou ativo sobre a árvore descartada depois de restaurar o Autosave")
+	}
 }

@@ -23,6 +23,7 @@ const (
 	stagePhase2   = "phase2"
 	stageIndexing = "indexing"
 	stageWatching = "watching"
+	stageRescan   = "rescan"
 )
 
 // barrier dá aos testes um ponto de parada determinístico entre as etapas da
@@ -91,8 +92,7 @@ func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
 	})
 	s.scanMu.Unlock()
 
-	s.activeRoots = config.Roots
-	s.lastConfig = config
+	s.setScanState(config.Roots, config)
 
 	// O Assistente só lê arquivos dentro das Raízes Varridas (contrato 1.11).
 	if s.MCPContext != nil {
@@ -109,7 +109,7 @@ func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
 
 	// Monitoramento e árvore antiga saem de cena antes da nova Varredura.
 	s.stopWatcher()
-	s.Tree.Reset()
+	s.Tree().Reset()
 
 	s.noteAutoSaveBaseline(config, time.Now())
 	s.ensureAutoSaveLoop(config)
@@ -123,8 +123,8 @@ func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
 // buildQuickScanLookup monta o índice do Quick Scan sem nunca materializar a
 // lista de arquivos de um Snapshot na memória.
 func (s *AppServer) buildQuickScanLookup() map[string]*scanner.FileNode {
-	if s.Tree != nil && s.Tree.GetTotalFileCount() > 0 {
-		return scanner.BuildQuickScanLookupFromTree(s.Tree)
+	if tree := s.Tree(); tree != nil && tree.GetTotalFileCount() > 0 {
+		return scanner.BuildQuickScanLookupFromTree(tree)
 	}
 	info, err := scanner.GetLatestAutoSave(s.autoSaveDir())
 	if err != nil || info == nil {
@@ -158,12 +158,20 @@ func (s *AppServer) orchestrateScan(ctx context.Context, cancel context.CancelFu
 	// FASE 1: metadados.
 	s.barrier(stagePhase1)
 	if err := ctx.Err(); err != nil {
+		s.Scanner.SetQuickScanLookup(nil)
 		s.finishScanAborted(err)
 		return
 	}
-	if err := s.Scanner.StartScan(ctx, config, func(st scanner.ScanStatus) {
+	err := s.Scanner.StartScan(ctx, config, func(st scanner.ScanStatus) {
 		s.broadcastSSE("scan_progress", st)
-	}); err != nil {
+	})
+
+	// O índice do Quick Scan só serve à Fase 1. Segurá-lo depois prendia a
+	// árvore anterior inteira — nós e caminhos em minúsculas do mapa — pelo
+	// resto da sessão, desfazendo parte do ganho do ADR-0001.
+	s.Scanner.SetQuickScanLookup(nil)
+
+	if err != nil {
 		s.finishScanAborted(err)
 		return
 	}
@@ -179,7 +187,7 @@ func (s *AppServer) orchestrateScan(ctx context.Context, cancel context.CancelFu
 	}
 	s.setPhase(PhaseHashing, "Iniciando cálculo de hashes em multithread...")
 
-	allFiles := s.Tree.GetAllFiles()
+	allFiles := s.Tree().GetAllFiles()
 	opts := hasher.ComputeHashOptions{
 		Algorithm:     config.HashAlgorithm,
 		HashAllFiles:  config.HashAllFiles,
@@ -231,7 +239,7 @@ func (s *AppServer) orchestrateScan(ctx context.Context, cancel context.CancelFu
 		return
 	}
 
-	s.FolderIndex.RebuildFolderIndex(s.Tree)
+	s.FolderIndex.RebuildFolderIndex(s.Tree())
 	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
 
 	if err := ctx.Err(); err != nil {
@@ -280,7 +288,7 @@ func (s *AppServer) finishScanAborted(err error) {
 func (s *AppServer) startWatching(config scanner.ScanConfig) {
 	algo := scanner.NormalizeHashAlgorithm(config.HashAlgorithm)
 	fw, err := watcher.New(watcher.Options{
-		Tree:        s.Tree,
+		Tree:        s.Tree(),
 		Index:       s.Index,
 		FolderIndex: s.FolderIndex,
 		HashFunc: func(p string) (string, error) {
@@ -348,12 +356,21 @@ func (s *AppServer) rescanRoot(root string) {
 	s.scanDone = done
 	s.scanMu.Unlock()
 
-	config := s.lastConfig
+	config := s.lastScanConfig()
 	config.Roots = []string{root}
 	config.QuickScanMode = true
 
 	go func() {
+		var scanErr error
 		defer func() {
+			// StartScan publica "phase1_metadata" antes de qualquer trabalho e
+			// não a desfaz ao devolver erro. Sem este acerto a fase ficava presa
+			// numa fase ocupada e todo start de Varredura e todo carregamento de
+			// Snapshot respondia 409 até o usuário apertar Cancelar. A fase é
+			// acertada ANTES de a vaga ser liberada: quem vê a vaga livre já vê
+			// a fase coerente.
+			s.settleAfterRescan(root, scanErr)
+
 			s.scanMu.Lock()
 			if s.scanDone == done {
 				s.scanDone = nil
@@ -365,26 +382,53 @@ func (s *AppServer) rescanRoot(root string) {
 		}()
 
 		log.Printf("[MONITORAMENTO] buffer estourou em %s: revarrendo apenas esta raiz\n", root)
-		s.Scanner.SetQuickScanLookup(scanner.BuildQuickScanLookupFromTree(s.Tree))
-		err := s.Scanner.StartScan(ctx, config, nil)
+		s.barrier(stageRescan)
+		s.Scanner.SetQuickScanLookup(scanner.BuildQuickScanLookupFromTree(s.Tree()))
+		scanErr = s.Scanner.StartScan(ctx, config, nil)
 		s.Scanner.SetQuickScanLookup(nil)
-		if err != nil {
+		if scanErr != nil {
 			return
 		}
 
-		s.Index.RebuildIndex(s.Tree.GetAllFiles())
+		s.Index.RebuildIndex(s.Tree().GetAllFiles())
 		s.FolderIndex.MarkDirty()
-
-		watching := s.currentWatcher() != nil
-		s.Scanner.SetStatus(func(st *ScanStatus) {
-			if watching {
-				st.Phase = PhaseWatching
-			}
-			st.IsWatching = watching
-			st.CurrentPath = fmt.Sprintf("Raiz %s remapeada após estouro do buffer de eventos.", root)
-		})
-		s.broadcastStatus()
 	}()
+}
+
+// settleAfterRescan publica o desfecho de uma revarredura de raiz.
+//
+// Com o Monitoramento de pé a fase volta para "watching": é o que o aplicativo
+// está de fato fazendo, com revarredura ou sem ela. Sem Monitoramento o desfecho
+// é terminal — "cancelled" se houve Cancelamento, "idle" se a revarredura morreu
+// por outro motivo e "completed" se ela terminou.
+func (s *AppServer) settleAfterRescan(root string, err error) {
+	watching := s.currentWatcher() != nil
+	cancelled := s.currentPhase() == PhaseCancelling ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+
+	phase := PhaseWatching
+	message := fmt.Sprintf("Raiz %s remapeada após estouro do buffer de eventos.", root)
+	switch {
+	case err == nil && !watching:
+		phase = PhaseCompleted
+	case cancelled:
+		message = fmt.Sprintf("Revarredura de %s cancelada.", root)
+		if !watching {
+			phase = PhaseCancelled
+		}
+	case err != nil:
+		message = fmt.Sprintf("Revarredura de %s interrompida: %v", root, err)
+		if !watching {
+			phase = PhaseIdle
+		}
+	}
+
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = phase
+		st.IsWatching = watching
+		st.CurrentPath = message
+	})
+	s.broadcastStatus()
 }
 
 func (s *AppServer) handleGetFolderDuplicates(w http.ResponseWriter, r *http.Request) {
@@ -418,7 +462,7 @@ func (s *AppServer) handleGetFolderDuplicates(w http.ResponseWriter, r *http.Req
 	// Reconstrói só quando o Monitoramento marcou o índice sujo. Zero grupos
 	// depois de um filtro não é sinal de índice velho: reconstruir por causa
 	// disso varria a árvore inteira a cada consulta (achado M3).
-	s.FolderIndex.RebuildIfDirty(s.Tree)
+	s.FolderIndex.RebuildIfDirty(s.Tree())
 	res := s.FolderIndex.Query(filter)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -434,7 +478,7 @@ func (s *AppServer) handleCompareFolders(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	result, err := indexer.CompareFolders(s.Tree, pathA, pathB)
+	result, err := indexer.CompareFolders(s.Tree(), pathA, pathB)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -508,9 +552,10 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 	// a paginação completa fica em /api/tree/files (contrato 1.4).
 	if path == "" || path == "Meus Discos" {
 		rootSummaries := make([]*scanner.DirSummary, 0)
-		roots := s.Tree.GetRootsSnapshot()
+		tree := s.Tree()
+		roots := tree.GetRootsSnapshot()
 		for _, rNode := range roots {
-			summary := s.Tree.GetDirSummary(rNode.Path(), depth, scanner.DefaultSummaryMaxFiles)
+			summary := tree.GetDirSummary(rNode.Path(), depth, scanner.DefaultSummaryMaxFiles)
 			if summary != nil {
 				rootSummaries = append(rootSummaries, summary)
 			}
@@ -519,7 +564,7 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary := s.Tree.GetDirSummary(path, depth, scanner.DefaultSummaryMaxFiles)
+	summary := s.Tree().GetDirSummary(path, depth, scanner.DefaultSummaryMaxFiles)
 	if summary == nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"path":            path,
@@ -574,7 +619,7 @@ func (s *AppServer) handleGetTreeFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	total, files := s.Tree.GetFilesPage(path, offset, limit, sortBy)
+	total, files := s.Tree().GetFilesPage(path, offset, limit, sortBy)
 	if files == nil {
 		files = []*scanner.FileNode{}
 	}
@@ -637,14 +682,14 @@ func (s *AppServer) handleGetIdleFiles(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 
-	summary := indexer.QueryIdleFilesStreaming(s.Tree, minAgeDays, minSize, ext, search, sortBy, offset, limit)
+	summary := indexer.QueryIdleFilesStreaming(s.Tree(), minAgeDays, minSize, ext, search, sortBy, offset, limit)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
 }
 
 func (s *AppServer) handleGetExtensionStats(w http.ResponseWriter, r *http.Request) {
-	statsList := s.Tree.AggregateExtensionStats()
+	statsList := s.Tree().AggregateExtensionStats()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(statsList)
 }

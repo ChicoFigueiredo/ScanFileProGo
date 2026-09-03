@@ -262,16 +262,17 @@ func (s *AppServer) forgetItem(path string, isDir bool) {
 		return
 	}
 
+	tree := s.Tree()
 	if isDir {
-		if s.Tree != nil {
-			s.Tree.RemoveDir(path)
+		if tree != nil {
+			tree.RemoveDir(path)
 		}
 		if s.Index != nil {
 			s.Index.RemoveDirFromIndex(path)
 		}
 	} else {
-		if s.Tree != nil {
-			s.Tree.RemoveFile(path)
+		if tree != nil {
+			tree.RemoveFile(path)
 		}
 		if s.Index != nil {
 			s.Index.RemoveFileFromIndex(path)
@@ -292,11 +293,14 @@ func (s *AppServer) pathIsDir(path string) bool {
 	if info, err := os.Lstat(path); err == nil {
 		return info.IsDir()
 	}
-	return s.Tree != nil && s.Tree.FindDir(path) != nil
+	tree := s.Tree()
+	return tree != nil && tree.FindDir(path) != nil
 }
 
 // scanRoots copies the Raízes Varridas currently loaded.
 func (s *AppServer) scanRoots() []string {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	roots := make([]string, len(s.activeRoots))
 	copy(roots, s.activeRoots)
 	return roots
