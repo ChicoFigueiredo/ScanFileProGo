@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"scanfile/pkg/scanner"
 	"strings"
 	"time"
+
+	"scanfile/pkg/scanner"
 )
 
 func (s *AppServer) handleGetAutoSaveStatus(w http.ResponseWriter, r *http.Request) {
-	info, err := scanner.GetLatestAutoSave("saved_scans")
+	info, err := scanner.GetLatestAutoSave(s.autoSaveDir())
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"exists": false})
@@ -24,75 +25,89 @@ func (s *AppServer) handleGetAutoSaveStatus(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// adoptSnapshot troca a árvore ativa pela recém-carregada e reconstrói os
+// índices. Devolve os totais de duplicados para o status.
+//
+// A troca também alcança s.Scanner.Tree e s.MCPContext.Tree: sem isso a próxima
+// Varredura continuava escrevendo na árvore antiga (achado C4) e o Assistente
+// consultava um retrato que a interface não mostra mais.
+func (s *AppServer) adoptSnapshot(tm *scanner.TreeManager, summary *scanner.CacheSnapshotSummary, progress func(percent float64, message string)) (grpCount, fileCount int, wasted int64, fGrpCount, fCount int, fWasted int64) {
+	progress(88, "Reconstruindo índice de arquivos duplicados por hash...")
+
+	s.Tree = tm
+	s.Scanner.Tree = tm
+	if s.MCPContext != nil {
+		s.MCPContext.Tree = tm
+		// Sem Raízes Varridas o Assistente recusa toda leitura de arquivo
+		// (contrato 1.11).
+		s.MCPContext.SetAllowedRoots(summary.Roots)
+	}
+	s.activeRoots = summary.Roots
+	s.lastConfig = summary.ScanSettings
+
+	s.Index.RebuildIndex(s.Tree.GetAllFiles())
+	grpCount, fileCount, wasted = s.Index.GetSummaryStats()
+
+	progress(95, "Identificando e classificando pastas clones...")
+
+	s.FolderIndex.RebuildFolderIndex(s.Tree)
+	fGrpCount, fCount, fWasted = s.FolderIndex.GetSummaryStats()
+
+	return grpCount, fileCount, wasted, fGrpCount, fCount, fWasted
+}
+
+// loadProgress publica o andamento da leitura de um Snapshot.
+func (s *AppServer) loadProgress(percent float64, message string) {
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = PhaseLoadingCache
+		st.CurrentPath = message
+		st.ProgressPercent = percent
+	})
+	s.broadcastStatus()
+}
+
 func (s *AppServer) handleRestoreAutoSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	info, err := scanner.GetLatestAutoSave("saved_scans")
+	if phase := s.currentPhase(); isBusyPhase(phase) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "scan_in_progress", "phase": phase})
+		return
+	}
+
+	info, err := scanner.GetLatestAutoSave(s.autoSaveDir())
 	if err != nil {
 		http.Error(w, "Nenhum arquivo de autosave encontrado", http.StatusNotFound)
 		return
 	}
 
-	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
-		st.Phase = "loading_cache"
-		st.CurrentPath = fmt.Sprintf("Carregando snapshot de autosave: %s", filepath.Base(info.FilePath))
-		st.ProgressPercent = 5
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	s.loadProgress(5, fmt.Sprintf("Carregando snapshot de autosave: %s", filepath.Base(info.FilePath)))
 
-	tm, snapshot, err := scanner.LoadCacheFromFileWithProgress(info.FilePath, func(stage string, percent float64, details string) {
-		s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
-			st.Phase = "loading_cache"
-			st.CurrentPath = fmt.Sprintf("%s - %s", stage, details)
-			st.ProgressPercent = percent
-		})
-		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	// Leitura em streaming: o resumo volta sem a lista de arquivos (achado H3).
+	tm, summary, err := scanner.LoadCacheSummaryFromFile(info.FilePath, func(stage string, percent float64, details string) {
+		s.loadProgress(percent, fmt.Sprintf("%s - %s", stage, details))
 	})
 	if err != nil {
-		s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
-			st.Phase = "idle"
-			st.ProgressPercent = 0
-		})
-		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+		s.setPhase(PhaseIdle, "")
+		s.Scanner.SetStatus(func(st *ScanStatus) { st.ProgressPercent = 0 })
+		s.broadcastStatus()
 		http.Error(w, "Erro ao carregar autosave: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
-		st.Phase = "loading_cache"
-		st.CurrentPath = "Reconstruindo índice de duplicatas por hash..."
-		st.ProgressPercent = 88
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	grpCount, fileCount, wasted, fGrpCount, fCount, fWasted := s.adoptSnapshot(tm, summary, s.loadProgress)
 
-	s.Tree = tm
-	s.activeRoots = snapshot.Roots
-	s.lastConfig = snapshot.ScanSettings
-
-	allFiles := s.Tree.GetAllFiles()
-	s.Index.RebuildIndex(allFiles)
-	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
-
-	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
-		st.Phase = "loading_cache"
-		st.CurrentPath = "Identificando e classificando pastas clones..."
-		st.ProgressPercent = 95
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-
-	s.FolderIndex.RebuildFolderIndex(s.Tree)
-	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
-
-	s.Scanner.SetStatus(func(st *scanner.ScanStatus) {
-		st.Phase = "completed"
-		st.CurrentPath = fmt.Sprintf("Autosave restaurado com sucesso (%d arquivos).", snapshot.TotalFiles)
-		st.TotalFilesScanned = snapshot.TotalFiles
-		st.TotalDirsScanned = snapshot.TotalDirs
-		st.TotalBytesScanned = snapshot.TotalBytes
-		st.TotalAllocatedBytesScanned = snapshot.TotalAllocatedBytes
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = PhaseCompleted
+		st.CurrentPath = fmt.Sprintf("Autosave restaurado com sucesso (%d arquivos).", summary.TotalFiles)
+		st.TotalFilesScanned = summary.TotalFiles
+		st.TotalDirsScanned = summary.TotalDirs
+		st.TotalBytesScanned = summary.TotalBytes
+		st.TotalAllocatedBytesScanned = summary.TotalAllocatedBytes
 		st.DuplicateGroupsCount = grpCount
 		st.DuplicateFilesCount = fileCount
 		st.DuplicateWastedBytes = wasted
@@ -103,13 +118,14 @@ func (s *AppServer) handleRestoreAutoSave(w http.ResponseWriter, r *http.Request
 		st.LastAutoSaveTime = info.ModTime.Unix()
 		st.AutoSaveFilePath = info.FilePath
 	})
+	s.broadcastStatus()
 
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	s.noteAutoSaveBaseline(summary.ScanSettings, time.Now())
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":   "restored",
-		"snapshot": snapshot,
+		"status":  "restored",
+		"summary": summary,
 	})
 }
 
@@ -137,7 +153,7 @@ func (s *AppServer) handleSaveCache(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(fileName, ".scanfile.gz") && !strings.HasSuffix(fileName, ".scanfile") && !strings.HasSuffix(fileName, ".json.gz") {
 			fileName += ".scanfile.gz"
 		}
-		targetPath = filepath.Join("saved_scans", fileName)
+		targetPath = filepath.Join(s.autoSaveDir(), fileName)
 	}
 
 	err := scanner.SaveCacheToFile(s.Tree, s.activeRoots, s.lastConfig, targetPath)
@@ -171,66 +187,35 @@ func (s *AppServer) handleLoadCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "loading_cache"
-		st.CurrentPath = fmt.Sprintf("Carregando snapshot de cache: %s", filepath.Base(req.FilePath))
-		st.ProgressPercent = 5
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	if phase := s.currentPhase(); isBusyPhase(phase) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "scan_in_progress", "phase": phase})
+		return
+	}
 
-	loadedTree, snapshot, err := scanner.LoadCacheFromFileWithProgress(req.FilePath, func(stage string, percent float64, details string) {
-		s.Scanner.SetStatus(func(st *ScanStatus) {
-			st.Phase = "loading_cache"
-			st.CurrentPath = fmt.Sprintf("%s - %s", stage, details)
-			st.ProgressPercent = percent
-		})
-		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	s.loadProgress(5, fmt.Sprintf("Carregando snapshot de cache: %s", filepath.Base(req.FilePath)))
+
+	loadedTree, summary, err := scanner.LoadCacheSummaryFromFile(req.FilePath, func(stage string, percent float64, details string) {
+		s.loadProgress(percent, fmt.Sprintf("%s - %s", stage, details))
 	})
 	if err != nil {
-		s.Scanner.SetStatus(func(st *ScanStatus) {
-			st.Phase = "idle"
-			st.ProgressPercent = 0
-		})
-		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+		s.setPhase(PhaseIdle, "")
+		s.Scanner.SetStatus(func(st *ScanStatus) { st.ProgressPercent = 0 })
+		s.broadcastStatus()
 		http.Error(w, fmt.Sprintf("Erro ao carregar cache: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "loading_cache"
-		st.CurrentPath = "Reconstruindo índice de arquivos duplicados por hash..."
-		st.ProgressPercent = 88
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-
-	// Replace active Tree
-	s.Tree = loadedTree
-	s.Scanner.Tree = loadedTree
-	s.activeRoots = snapshot.Roots
-	s.lastConfig = snapshot.ScanSettings
-
-	// Rebuild Duplicate Index
-	allFiles := s.Tree.GetAllFiles()
-	s.Index.RebuildIndex(allFiles)
-	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
+	grpCount, fileCount, wasted, fGrpCount, fCount, fWasted := s.adoptSnapshot(loadedTree, summary, s.loadProgress)
 
 	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "loading_cache"
-		st.CurrentPath = "Identificando e classificando pastas clones..."
-		st.ProgressPercent = 95
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-
-	// Rebuild Folder Duplicate Index
-	s.FolderIndex.RebuildFolderIndex(s.Tree)
-	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
-
-	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "completed"
-		st.CurrentPath = fmt.Sprintf("Cache carregado com sucesso de %s (%s)", filepath.Base(req.FilePath), snapshot.Timestamp.Format("02/01/2006 15:04"))
-		st.TotalFilesScanned = snapshot.TotalFiles
-		st.TotalDirsScanned = snapshot.TotalDirs
-		st.TotalBytesScanned = snapshot.TotalBytes
+		st.Phase = PhaseCompleted
+		st.CurrentPath = fmt.Sprintf("Cache carregado com sucesso de %s (%s)", filepath.Base(req.FilePath), summary.Timestamp.Format("02/01/2006 15:04"))
+		st.TotalFilesScanned = summary.TotalFiles
+		st.TotalDirsScanned = summary.TotalDirs
+		st.TotalBytesScanned = summary.TotalBytes
+		st.TotalAllocatedBytesScanned = summary.TotalAllocatedBytes
 		st.DuplicateGroupsCount = grpCount
 		st.DuplicateFilesCount = fileCount
 		st.DuplicateWastedBytes = wasted
@@ -239,12 +224,14 @@ func (s *AppServer) handleLoadCache(w http.ResponseWriter, r *http.Request) {
 		st.DuplicateFolderWastedBytes = fWasted
 		st.ProgressPercent = 100
 	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+	s.broadcastStatus()
+
+	s.noteAutoSaveBaseline(summary.ScanSettings, time.Now())
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":      "loaded",
-		"snapshot":    snapshot,
+		"summary":     summary,
 		"groupCount":  grpCount,
 		"fileCount":   fileCount,
 		"wastedBytes": wasted,
@@ -252,7 +239,7 @@ func (s *AppServer) handleLoadCache(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *AppServer) handleListCaches(w http.ResponseWriter, r *http.Request) {
-	list, err := scanner.ListSavedCaches("saved_scans")
+	list, err := scanner.ListSavedCaches(s.autoSaveDir())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

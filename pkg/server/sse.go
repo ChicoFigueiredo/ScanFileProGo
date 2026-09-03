@@ -4,7 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"scanfile/pkg/scanner"
 )
+
+// maxRecentLogs é o tamanho do anel de eventos do Monitoramento servido em
+// GET /api/logs (contrato 1.10).
+const maxRecentLogs = 200
 
 func (s *AppServer) broadcastSSE(eventType string, data any) {
 	bytes, err := json.Marshal(data)
@@ -56,4 +62,20 @@ func (s *AppServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// broadcastStatus envia o retrato corrente da Varredura para a interface.
+func (s *AppServer) broadcastStatus() {
+	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
+}
+
+// appendRecentLog guarda os últimos eventos do Monitoramento em memória, para
+// quem chega depois pedir a lista por GET /api/logs.
+func (s *AppServer) appendRecentLog(ev scanner.FSEventLog) {
+	s.recentLogsMu.Lock()
+	s.recentLogs = append(s.recentLogs, ev)
+	if len(s.recentLogs) > maxRecentLogs {
+		s.recentLogs = s.recentLogs[len(s.recentLogs)-maxRecentLogs:]
+	}
+	s.recentLogsMu.Unlock()
 }
