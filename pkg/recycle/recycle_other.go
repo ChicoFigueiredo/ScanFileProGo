@@ -3,53 +3,33 @@
 package recycle
 
 import (
-	"fmt"
+	"errors"
 	"os"
 )
 
-// SendToRecycleBin moves a file to recycle or removes on non-Windows.
+// errNoRecycleBin is returned instead of quietly destroying a file: outside
+// Windows there is no Recycle Bin to restore anything from.
+var errNoRecycleBin = errors.New("a Lixeira do Windows não existe nesta plataforma: o item não foi apagado")
+
+// SendToRecycleBin always fails outside Windows. Removing the file here would
+// turn a Reciclagem into an Exclusão Permanente, which the product forbids.
 func SendToRecycleBin(filePath string) error {
-	return os.Remove(filePath)
+	return errNoRecycleBin
 }
 
-// DeletePermanent permanently deletes a file using os.Remove.
+// DeletePermanent removes a file or a whole folder irreversibly.
 func DeletePermanent(filePath string) error {
+	info, err := os.Lstat(filePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return os.RemoveAll(filePath)
+	}
 	return os.Remove(filePath)
 }
 
-// BatchDeleteResult summarizes the batch deletion.
-type BatchDeleteResult struct {
-	TotalRequested int      `json:"totalRequested"`
-	SuccessCount   int      `json:"successCount"`
-	FailedCount    int      `json:"failedCount"`
-	FreedBytes     int64    `json:"freedBytes"`
-	Errors         []string `json:"errors,omitempty"`
-}
-
-// BatchDelete processes a list of files with their sizes.
-func BatchDelete(files []string, fileSizes map[string]int64, toRecycleBin bool) BatchDeleteResult {
-	res := BatchDeleteResult{
-		TotalRequested: len(files),
-	}
-
-	for _, p := range files {
-		var err error
-		if toRecycleBin {
-			err = SendToRecycleBin(p)
-		} else {
-			err = DeletePermanent(p)
-		}
-
-		if err != nil {
-			res.FailedCount++
-			res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", p, err))
-		} else {
-			res.SuccessCount++
-			if sz, ok := fileSizes[p]; ok {
-				res.FreedBytes += sz
-			}
-		}
-	}
-
-	return res
+// preflight always refuses: there is no Recycle Bin on this platform.
+func preflight(path string) (bool, string, int64) {
+	return false, errNoRecycleBin.Error(), 0
 }
