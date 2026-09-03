@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cespare/xxhash/v2"
 	"scanfile/pkg/scanner"
@@ -20,26 +21,36 @@ type FolderSummary struct {
 	SubDirCount       int64  `json:"subDirCount"`
 	FolderContentHash string `json:"folderContentHash"`
 	ModTime           int64  `json:"modTime"`
+	// AllFilesHashed is true only when every file in the subtree has a full
+	// content hash. When false the Merkle hash fell back to size + modification
+	// time, which is a hint and never proof of identical content (achado M14).
+	AllFilesHashed bool `json:"allFilesHashed"`
 }
 
 // DuplicateFolderGroup represents 2 or more directories that have 100% identical contents.
 type DuplicateFolderGroup struct {
-	ID            string           `json:"id"` // Composite key: folderHash + "|" + size
-	FolderHash    string           `json:"folderHash"`
-	FolderSize    int64            `json:"folderSize"`
-	FileCount     int64            `json:"fileCount"`
-	SubDirCount   int64            `json:"subDirCount"` // Total subdirectories inside this folder
-	FolderCount   int              `json:"folderCount"`
-	WastedBytes   int64            `json:"wastedBytes"` // (FolderCount - 1) * FolderSize
-	IsTopLevel    bool             `json:"isTopLevel"`  // True if root duplicate parent (not nested inside another clone group)
-	ParentGroupID string           `json:"parentGroupId,omitempty"`
-	Folders       []*FolderSummary `json:"folders"`
+	ID            string `json:"id"` // Composite key: folderHash + "|" + size
+	FolderHash    string `json:"folderHash"`
+	FolderSize    int64  `json:"folderSize"`
+	FileCount     int64  `json:"fileCount"`
+	SubDirCount   int64  `json:"subDirCount"` // Total subdirectories inside this folder
+	FolderCount   int    `json:"folderCount"`
+	WastedBytes   int64  `json:"wastedBytes"` // (FolderCount - 1) * FolderSize
+	IsTopLevel    bool   `json:"isTopLevel"`  // True if root duplicate parent (not nested inside another clone group)
+	ParentGroupID string `json:"parentGroupId,omitempty"`
+	// Confidence is ConfidenceHash when every folder in the group had all of its
+	// files hashed, and ConfidenceSizeMTime otherwise (achado M14).
+	Confidence string           `json:"confidence"`
+	Folders    []*FolderSummary `json:"folders"`
 }
 
 // FolderDuplicateIndex indexes and queries duplicate directories across scanned storage.
 type FolderDuplicateIndex struct {
 	mu     sync.RWMutex
 	groups map[string]*DuplicateFolderGroup
+	// dirty is raised by Monitoramento whenever the tree changes, so the costly
+	// Merkle pass runs once on demand instead of on every query (achado M3).
+	dirty atomic.Bool
 }
 
 // NewFolderDuplicateIndex creates an empty folder duplicate index.
@@ -49,11 +60,32 @@ func NewFolderDuplicateIndex() *FolderDuplicateIndex {
 	}
 }
 
+// MarkDirty records that the tree changed and the folder index is stale.
+func (fidx *FolderDuplicateIndex) MarkDirty() {
+	fidx.dirty.Store(true)
+}
+
+// IsDirty reports whether a rebuild is pending.
+func (fidx *FolderDuplicateIndex) IsDirty() bool {
+	return fidx.dirty.Load()
+}
+
+// RebuildIfDirty rebuilds the index only when MarkDirty was called since the
+// last rebuild, and reports whether the rebuild actually happened.
+func (fidx *FolderDuplicateIndex) RebuildIfDirty(tm *scanner.TreeManager) bool {
+	if tm == nil || !fidx.dirty.CompareAndSwap(true, false) {
+		return false
+	}
+	fidx.RebuildFolderIndex(tm)
+	return true
+}
+
 // RebuildFolderIndex traverses the tree in a single bottom-up pass and identifies identical duplicate folders.
 func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 	fidx.mu.Lock()
 	defer fidx.mu.Unlock()
 
+	fidx.dirty.Store(false)
 	fidx.groups = make(map[string]*DuplicateFolderGroup)
 
 	// Step 1: Collect folder summaries using a single-pass post-order bottom-up Merkle traversal O(N)
@@ -79,12 +111,17 @@ func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 				FileCount:   summary.FileCount,
 				SubDirCount: summary.SubDirCount,
 				IsTopLevel:  true,
+				Confidence:  ConfidenceHash,
 				Folders:     make([]*FolderSummary, 0, 2),
 			}
 			fidx.groups[key] = grp
 		}
 		if summary.SubDirCount > grp.SubDirCount {
 			grp.SubDirCount = summary.SubDirCount
+		}
+		if !summary.AllFilesHashed {
+			// One unhashed file anywhere downgrades the whole group (achado M14).
+			grp.Confidence = ConfidenceSizeMTime
 		}
 		grp.Folders = append(grp.Folders, summary)
 		grp.FolderCount = len(grp.Folders)
@@ -133,9 +170,11 @@ func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
 }
 
 // computeAndCollectFolderMerkle computes Merkle hash bottom-up in O(N) single pass and collects summaries.
-func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary) string {
+// It also propagates whether every file in the subtree carries a full content
+// hash, which decides the confidence reported to the user (achado M14).
+func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary) (contentHash string, allHashed bool) {
 	if node == nil {
-		return ""
+		return "", true
 	}
 
 	nodePath, nodeName, totalSize, fileCount, subDirCount, modTime := node.GetInfo()
@@ -147,15 +186,19 @@ func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary
 		hash string
 	}
 	childHashes := make([]childHashEntry, 0, len(children))
+	allHashed = true
 	for _, child := range children {
-		cHash := computeAndCollectFolderMerkle(child, list)
+		cHash, cHashed := computeAndCollectFolderMerkle(child, list)
+		if !cHashed {
+			allHashed = false
+		}
 		if cHash != "" {
 			childHashes = append(childHashes, childHashEntry{name: child.Name, hash: cHash})
 		}
 	}
 
 	if fileCount == 0 {
-		return ""
+		return "", allHashed
 	}
 
 	// Hash direct files of this node
@@ -174,7 +217,10 @@ func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary
 	for _, f := range directFiles {
 		h := f.Hash
 		if h == "" {
+			// No content hash available: fall back to size + modification time,
+			// and remember that this folder cannot claim hash confidence.
 			h = fmt.Sprintf("sz:%d|mt:%d", f.Size, f.ModTime)
+			allHashed = false
 		}
 		_, _ = hasher.WriteString(fmt.Sprintf("F|%s|%d|%s\n", f.Name, f.Size, h))
 	}
@@ -187,7 +233,7 @@ func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary
 		_, _ = hasher.WriteString(fmt.Sprintf("D|%s|%s\n", ch.name, ch.hash))
 	}
 
-	contentHash := fmt.Sprintf("dir_xxh64:%016x", hasher.Sum64())
+	contentHash = fmt.Sprintf("dir_xxh64:%016x", hasher.Sum64())
 
 	*list = append(*list, &FolderSummary{
 		Path:              nodePath,
@@ -197,9 +243,10 @@ func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary
 		SubDirCount:       subDirCount,
 		FolderContentHash: contentHash,
 		ModTime:           modTime,
+		AllFilesHashed:    allHashed,
 	})
 
-	return contentHash
+	return contentHash, allHashed
 }
 
 // ComputeFolderContentHash computes a deterministic content-based Merkle hash for a folder subtree.
@@ -208,9 +255,26 @@ func ComputeFolderContentHash(dirNode *scanner.DirNode) string {
 		return ""
 	}
 	var dummyList []*FolderSummary
-	return computeAndCollectFolderMerkle(dirNode, &dummyList)
+	hash, _ := computeAndCollectFolderMerkle(dirNode, &dummyList)
+	return hash
 }
 
+// FolderSummaryOf returns the summary of a single folder, including its Merkle
+// content hash and whether every file below it is hashed.
+func FolderSummaryOf(dirNode *scanner.DirNode) *FolderSummary {
+	if dirNode == nil {
+		return nil
+	}
+	var list []*FolderSummary
+	_, _ = computeAndCollectFolderMerkle(dirNode, &list)
+	path, _, _, _, _, _ := dirNode.GetInfo()
+	for _, summary := range list {
+		if summary.Path == path {
+			return summary
+		}
+	}
+	return nil
+}
 
 // FolderQueryFilter options for duplicate folder searches.
 type FolderQueryFilter struct {
@@ -384,16 +448,20 @@ type FileDiffEntry struct {
 
 // FolderComparisonResult holds the detailed side-by-side comparison between 2 folders.
 type FolderComparisonResult struct {
-	PathA             string           `json:"pathA"`
-	PathB             string           `json:"pathB"`
-	NameA             string           `json:"nameA"`
-	NameB             string           `json:"nameB"`
-	TotalSizeA        int64            `json:"totalSizeA"`
-	TotalSizeB        int64            `json:"totalSizeB"`
-	TotalFilesA       int64            `json:"totalFilesA"`
-	TotalFilesB       int64            `json:"totalFilesB"`
-	FolderHashA       string           `json:"folderHashA"`
-	FolderHashB       string           `json:"folderHashB"`
+	PathA       string `json:"pathA"`
+	PathB       string `json:"pathB"`
+	NameA       string `json:"nameA"`
+	NameB       string `json:"nameB"`
+	TotalSizeA  int64  `json:"totalSizeA"`
+	TotalSizeB  int64  `json:"totalSizeB"`
+	TotalFilesA int64  `json:"totalFilesA"`
+	TotalFilesB int64  `json:"totalFilesB"`
+	FolderHashA string `json:"folderHashA"`
+	FolderHashB string `json:"folderHashB"`
+	// Confidence is ConfidenceHash only when every compared file on both sides
+	// had a full content hash; otherwise the verdict rests on size + modification
+	// time and Is100PercentMatch stays false (achado M14).
+	Confidence        string           `json:"confidence"`
 	Is100PercentMatch bool             `json:"is100PercentMatch"`
 	MatchPercentage   float64          `json:"matchPercentage"`
 	IdenticalCount    int              `json:"identicalCount"`
@@ -418,19 +486,22 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 		return nil, fmt.Errorf("pasta B não encontrada na árvore: %s", pathB)
 	}
 
+	pathA_, nameA, sizeA, filesCountA, _, _ := nodeA.GetInfo()
+	pathB_, nameB, sizeB, filesCountB, _, _ := nodeB.GetInfo()
+
 	filesA := nodeA.GetAllFiles()
 	filesB := nodeB.GetAllFiles()
 
 	mapA := make(map[string]*scanner.FileNode)
 	for _, f := range filesA {
-		rel, _ := filepath.Rel(nodeA.Path, f.Path)
+		rel, _ := filepath.Rel(pathA_, f.Path)
 		rel = strings.ReplaceAll(rel, "\\", "/")
 		mapA[rel] = f
 	}
 
 	mapB := make(map[string]*scanner.FileNode)
 	for _, f := range filesB {
-		rel, _ := filepath.Rel(nodeB.Path, f.Path)
+		rel, _ := filepath.Rel(pathB_, f.Path)
 		rel = strings.ReplaceAll(rel, "\\", "/")
 		mapB[rel] = f
 	}
@@ -454,6 +525,23 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 	var identicalCount, modifiedCount, onlyInACount, onlyInBCount int
 	var identicalBytes, onlyInABytes, onlyInBBytes int64
 
+	// Starts optimistic and is downgraded by the first file lacking a hash.
+	confidence := ConfidenceHash
+	for _, f := range filesA {
+		if f.Hash == "" {
+			confidence = ConfidenceSizeMTime
+			break
+		}
+	}
+	if confidence == ConfidenceHash {
+		for _, f := range filesB {
+			if f.Hash == "" {
+				confidence = ConfidenceSizeMTime
+				break
+			}
+		}
+	}
+
 	for _, rel := range allRelPaths {
 		fA, inA := mapA[rel]
 		fB, inB := mapB[rel]
@@ -464,6 +552,8 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 			if fA.Hash != "" && fB.Hash != "" {
 				isSame = (fA.Hash == fB.Hash) && (fA.Size == fB.Size)
 			} else {
+				// Without hashes the comparison is a heuristic, never proof.
+				confidence = ConfidenceSizeMTime
 				isSame = (fA.Size == fB.Size) && (fA.ModTime == fB.ModTime)
 			}
 
@@ -518,7 +608,9 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 
 	hashA := ComputeFolderContentHash(nodeA)
 	hashB := ComputeFolderContentHash(nodeB)
-	is100Match := (hashA == hashB) && (modifiedCount == 0) && (onlyInACount == 0) && (onlyInBCount == 0)
+	// Achado M14: only a hash-backed comparison may claim a 100% match.
+	is100Match := confidence == ConfidenceHash &&
+		(hashA == hashB) && (modifiedCount == 0) && (onlyInACount == 0) && (onlyInBCount == 0)
 
 	var matchPct float64
 	totalDistinct := len(allRelPaths)
@@ -527,16 +619,17 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 	}
 
 	return &FolderComparisonResult{
-		PathA:             nodeA.Path,
-		PathB:             nodeB.Path,
-		NameA:             nodeA.Name,
-		NameB:             nodeB.Name,
-		TotalSizeA:        nodeA.TotalSize,
-		TotalSizeB:        nodeB.TotalSize,
-		TotalFilesA:       nodeA.FileCount,
-		TotalFilesB:       nodeB.FileCount,
+		PathA:             pathA_,
+		PathB:             pathB_,
+		NameA:             nameA,
+		NameB:             nameB,
+		TotalSizeA:        sizeA,
+		TotalSizeB:        sizeB,
+		TotalFilesA:       filesCountA,
+		TotalFilesB:       filesCountB,
 		FolderHashA:       hashA,
 		FolderHashB:       hashB,
+		Confidence:        confidence,
 		Is100PercentMatch: is100Match,
 		MatchPercentage:   matchPct,
 		IdenticalCount:    identicalCount,
