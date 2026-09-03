@@ -5,12 +5,50 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+)
+
+const (
+	// DefaultSummaryMaxFiles é o teto de arquivos diretos devolvidos por
+	// GetDirSummary para a pasta consultada (achado H6).
+	DefaultSummaryMaxFiles = 500
+
+	// DeepSummaryMaxFiles é o teto por subpasta nos níveis mais fundos.
+	DeepSummaryMaxFiles = 50
+
+	// MaxFilesPageLimit é o teto de itens por página de GetFilesPage.
+	MaxFilesPageLimit = 500
+)
+
+// Ordenações aceitas por GetFilesPage.
+const (
+	SortSizeDesc = "size_desc"
+	SortNameAsc  = "name_asc"
+	SortModDesc  = "mod_desc"
 )
 
 // TreeManager manages the in-memory hierarchy of drives, directories, and files.
 type TreeManager struct {
 	mu    sync.RWMutex
 	Roots map[string]*DirNode // Keyed by normalized root path e.g. "C:\\"
+
+	// changes avança a cada mudança estrutural da árvore. O Autosave com
+	// Monitoramento ativo só grava quando este contador andou.
+	changes atomic.Uint64
+}
+
+// ChangeCounter devolve quantas mudanças estruturais a árvore sofreu desde a
+// criação do TreeManager. Avança em AddFile, RemoveFile, FastSetDir e
+// EnsureDirNode (quando cria nós).
+func (tm *TreeManager) ChangeCounter() uint64 {
+	if tm == nil {
+		return 0
+	}
+	return tm.changes.Load()
+}
+
+func (tm *TreeManager) markChanged() {
+	tm.changes.Add(1)
 }
 
 // NewTreeManager initializes an empty tree.
@@ -23,8 +61,9 @@ func NewTreeManager() *TreeManager {
 // Reset clears the tree.
 func (tm *TreeManager) Reset() {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
 	tm.Roots = make(map[string]*DirNode)
+	tm.mu.Unlock()
+	tm.markChanged()
 }
 
 // GetRootsSnapshot returns a slice copy of the current root nodes under a brief read-lock (Safe from deadlocks).
@@ -99,6 +138,7 @@ func (tm *TreeManager) GetOrCreateRoot(rootPath string) *DirNode {
 		Files:    make([]*FileNode, 0),
 	}
 	tm.Roots[rootKey] = root
+	tm.changes.Add(1)
 	return root
 }
 
@@ -137,6 +177,7 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 
 	parts := strings.Split(rel, string(filepath.Separator))
 	curr := root
+	created := false
 
 	for _, part := range parts {
 		if part == "" || part == "." {
@@ -164,11 +205,15 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 			}
 			curr.Children[part] = child
 			curr.SubDirCount++
+			created = true
 		}
 		curr.mu.Unlock()
 		curr = child
 	}
 
+	if created {
+		tm.markChanged()
+	}
 	return curr
 }
 
@@ -190,6 +235,7 @@ func (tm *TreeManager) FastSetDir(dirPath string, files []*FileNode, subDirNames
 	}
 	node.SubDirCount = int64(len(node.Children))
 	node.mu.Unlock()
+	tm.markChanged()
 	return node
 }
 
@@ -279,6 +325,7 @@ func (tm *TreeManager) AddFile(file *FileNode) {
 	dirNode.mu.Unlock()
 
 	tm.bubbleUpSize(dirPath, file.Size, 1)
+	tm.markChanged()
 }
 
 // bubbleUpSize adds size and file count to all ancestors of dirPath.
@@ -398,17 +445,27 @@ func (tm *TreeManager) RemoveFile(filePath string) (int64, bool) {
 
 	if found {
 		tm.bubbleUpSize(dirPath, -removedSize, -1)
+		tm.markChanged()
 	}
 
 	return removedSize, found
 }
 
 // GetDirSummary returns a summary of the requested directory for tree navigation in the UI.
-func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int) *DirSummary {
+//
+// maxFiles é opcional: quando omitido vale DefaultSummaryMaxFiles. A lista
+// `Files` traz os maiores arquivos diretos da pasta, e `DirectFileCount` diz
+// quantos existem de verdade, para a interface saber que houve corte.
+func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int, maxFiles ...int) *DirSummary {
 	if maxDepth <= 0 {
 		maxDepth = 5
 	} else if maxDepth > 10 {
 		maxDepth = 10
+	}
+
+	limit := DefaultSummaryMaxFiles
+	if len(maxFiles) > 0 && maxFiles[0] > 0 {
+		limit = maxFiles[0]
 	}
 
 	node := tm.FindDir(dirPath)
@@ -416,10 +473,10 @@ func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int) *DirSummary {
 		return nil
 	}
 
-	return tm.buildSummary(node, 1, maxDepth)
+	return tm.buildSummary(node, 1, maxDepth, limit)
 }
 
-func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *DirSummary {
+func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth, maxFiles int) *DirSummary {
 	if node == nil {
 		return nil
 	}
@@ -431,6 +488,7 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		TotalSize:           node.TotalSize,
 		TotalAllocatedSize:  node.TotalAllocatedSize,
 		FileCount:           node.FileCount,
+		DirectFileCount:     int64(len(node.Files)),
 		CompressedFileCount: node.CompressedFileCount,
 		SubDirCount:         node.SubDirCount,
 		ModTime:             node.ModTime,
@@ -440,28 +498,14 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		LinkTarget:          node.LinkTarget,
 	}
 
-	// Preserve files for treemap and table visualization:
-	// For the current folder (depth 1), include all direct files.
-	// For subfolders (depth > 1), include the top largest files (up to 50 per folder)
-	// so huge files (e.g. disk.vhdx, ISOs, ZIPs, virtual disks) are rendered in the Treemap
-	// while keeping payload light and protecting memory.
-	if currentDepth == 1 {
-		summary.Files = make([]*FileNode, len(node.Files))
-		copy(summary.Files, node.Files)
-	} else if len(node.Files) > 0 {
-		sortedFiles := make([]*FileNode, len(node.Files))
-		copy(sortedFiles, node.Files)
-		sort.Slice(sortedFiles, func(i, j int) bool {
-			return sortedFiles[i].Size > sortedFiles[j].Size
-		})
-		maxFilesPerDir := 50
-		if len(sortedFiles) > maxFilesPerDir {
-			sortedFiles = sortedFiles[:maxFilesPerDir]
-		}
-		summary.Files = sortedFiles
-	} else {
-		summary.Files = []*FileNode{}
+	// A pasta consultada devolve até maxFiles arquivos; subpastas devolvem os
+	// DeepSummaryMaxFiles maiores, o bastante para o treemap mostrar os arquivos
+	// gigantes sem estourar a resposta (achado H6).
+	perDirLimit := maxFiles
+	if currentDepth > 1 {
+		perDirLimit = DeepSummaryMaxFiles
 	}
+	summary.Files = topFilesBySize(node.Files, perDirLimit)
 
 	var children []*DirNode
 	if currentDepth <= maxDepth {
@@ -475,7 +519,7 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 	if currentDepth <= maxDepth && len(children) > 0 {
 		subDirs := make([]*DirSummary, 0, len(children))
 		for _, child := range children {
-			subSummary := tm.buildSummary(child, currentDepth+1, maxDepth)
+			subSummary := tm.buildSummary(child, currentDepth+1, maxDepth, maxFiles)
 			if subSummary != nil {
 				subDirs = append(subDirs, subSummary)
 			}
@@ -495,6 +539,67 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 	}
 
 	return summary
+}
+
+// topFilesBySize devolve os `limit` maiores arquivos da fatia, sem alterá-la.
+// O chamador precisa segurar o lock do nó.
+func topFilesBySize(files []*FileNode, limit int) []*FileNode {
+	if len(files) == 0 {
+		return []*FileNode{}
+	}
+	out := make([]*FileNode, len(files))
+	copy(out, files)
+	if limit > 0 && len(out) > limit {
+		sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
+		return out[:limit]
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
+	return out
+}
+
+// GetFilesPage devolve uma página dos arquivos diretos de uma pasta, junto com
+// o total real. sortBy aceita "size_desc" (padrão), "name_asc" e "mod_desc".
+func (tm *TreeManager) GetFilesPage(path string, offset, limit int, sortBy string) (int, []*FileNode) {
+	node := tm.FindDir(path)
+	if node == nil {
+		return 0, nil
+	}
+
+	node.mu.RLock()
+	files := make([]*FileNode, len(node.Files))
+	copy(files, node.Files)
+	node.mu.RUnlock()
+
+	total := len(files)
+
+	switch sortBy {
+	case SortNameAsc:
+		sort.Slice(files, func(i, j int) bool {
+			return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+		})
+	case SortModDesc:
+		sort.Slice(files, func(i, j int) bool { return files[i].ModTime > files[j].ModTime })
+	default:
+		sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return total, []*FileNode{}
+	}
+	if limit <= 0 || limit > MaxFilesPageLimit {
+		limit = MaxFilesPageLimit
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := make([]*FileNode, end-offset)
+	copy(page, files[offset:end])
+	return total, page
 }
 
 // ExtensionStatResult aggregates count and size per file extension.
@@ -606,7 +711,6 @@ func (tm *TreeManager) GetAllFiles() []*FileNode {
 	return allFiles
 }
 
-
 func (tm *TreeManager) collectFiles(node *DirNode, list *[]*FileNode) {
 	if node == nil {
 		return
@@ -670,4 +774,3 @@ func (node *DirNode) GetInfo() (path, name string, totalSize, fileCount, subDirC
 	defer node.mu.RUnlock()
 	return node.Path, node.Name, node.TotalSize, node.FileCount, node.SubDirCount, node.ModTime
 }
-
