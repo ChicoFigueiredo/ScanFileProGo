@@ -18,13 +18,9 @@ import (
 	"scanfile/pkg/privileges"
 )
 
-// Version é a versão da aplicação devolvida por GET /api/instance (e por
-// /api/system/info). O main a preenche a partir das flags de build.
-//
-// NOTA DE INTEGRAÇÃO: o contrato prevê que o Agente S1 também declare esta
-// variável em pkg/server. Ao fundir os branches, mantenha uma única declaração
-// (esta pode ser removida sem impacto, desde que a de S1 exista).
-var Version = "dev"
+// Version vive em handlers_files.go: é a mesma variável usada por
+// GET /api/instance e por GET /api/system/info, preenchida pelo main a partir
+// das flags de build.
 
 const (
 	// DefaultPresenceGrace é a janela de tolerância sem nenhum cliente
@@ -164,13 +160,10 @@ func (s *AppServer) SetHandoffMode(v bool) {
 // AdoptSession adota o token de Sessão de uma instância anterior (handoff de
 // elevação): a Janela já aberta continua autenticada contra o novo processo.
 //
-// NOTA DE INTEGRAÇÃO: sessionToken pertence ao Agente S1. Esta é a única
-// escrita feita fora de auth.go e só ocorre com --handoff.
+// A escrita é delegada a SetSessionToken (auth.go), dona do campo e do mutex
+// que o protege.
 func (s *AppServer) AdoptSession(token string) {
-	if token == "" {
-		return
-	}
-	s.sessionToken = token
+	s.SetSessionToken(token)
 }
 
 // Port devolve a porta efetivamente escutada (0 antes de Start).
