@@ -3,589 +3,296 @@ package ai
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
+	"math"
 	"sort"
 	"strings"
-	"time"
 )
 
-// ModelInfo describes an LLM model with its technical specifications.
+const (
+	// CatalogMaxSizeGB is the ceiling of the curated local catalogue (~14 GB).
+	CatalogMaxSizeGB = 14.0
+
+	// DefaultOllamaModel is the model the Assistente uses when none is chosen.
+	DefaultOllamaModel = "qwen3-vl:8b"
+
+	// memoryHeadroomGB is the RAM the operating system and the ScanFile process are
+	// assumed to need on top of the model itself.
+	memoryHeadroomGB = 2.0
+)
+
+// ModelInfo describes a model offered to the Assistente, in the shape consumed by
+// GET /api/ai/models.
 type ModelInfo struct {
-	ID             string   `json:"id"`             // e.g. "qwen3-vl:8b", "qwen2.5:1.5b"
-	Name           string   `json:"name"`           // e.g. "Qwen3-VL (8B) - Visão & Texto"
-	Family         string   `json:"family"`         // e.g. "qwen-vl", "qwen", "gemma", "llama", "deepseek"
-	Parameters     string   `json:"parameters"`     // e.g. "1.5B", "3B", "7B", "8B", "14B"
-	DownloadSize   string   `json:"downloadSize"`   // e.g. "986 MB", "5.4 GB"
-	DownloadBytes  int64    `json:"downloadBytes"`  // approx bytes on disk
-	RAMRequired    string   `json:"ramRequired"`    // e.g. "~6.0 GB VRAM / RAM"
-	RAMBytes       int64    `json:"ramBytes"`       // approx RAM in bytes
-	ContextWindow  int      `json:"contextWindow"`  // e.g. 32768, 131072
-	SupportsTools  bool     `json:"supportsTools"`  // true if supports native Function/Tool Calling
-	SupportsVision bool     `json:"supportsVision"` // true if multimodal vision & OCR capable
-	IsPrimary      bool     `json:"isPrimary"`      // true for primary recommended model
-	IsInstalled    bool     `json:"isInstalled"`    // true if detected locally in Ollama/models
-	RecommendedFor string   `json:"recommendedFor"` // description of strengths
-	Provider       string   `json:"provider"`       // "ollama", "openrouter", "direct"
-	IsFree         bool     `json:"isFree"`         // for OpenRouter models
-	MaxLimitGB     int      `json:"maxLimitGB"`     // 16 GB filter
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Provider      string  `json:"provider"` // "ollama" | "openrouter"
+	SizeGB        float64 `json:"sizeGB"`
+	Vision        bool    `json:"vision"`
+	Tools         bool    `json:"tools"`
+	Installed     bool    `json:"installed"`
+	Recommended   bool    `json:"recommended"`
+	FitsMemory    bool    `json:"fitsMemory"`
+	ContextWindow int     `json:"contextWindow,omitempty"`
+	Notes         string  `json:"notes,omitempty"`
 }
 
-// CuratedLocalModels is the master list of top recommended local models up to 16GB.
-var CuratedLocalModels = []ModelInfo{
+// CuratedOllamaModels is the curated local catalogue, capped at ~14 GB.
+// Vision and Tools mirror the capabilities Ollama publishes for each model.
+var CuratedOllamaModels = []ModelInfo{
 	{
-		ID:             "qwen3-vl:8b",
-		Name:           "Qwen3-VL (8B) - Visão & Texto Multimodal (Primário SOTA)",
-		Family:         "qwen-vl",
-		Parameters:     "8B",
-		DownloadSize:   "5.4 GB",
-		DownloadBytes:  5400 * 1024 * 1024,
-		RAMRequired:    "~6.0 GB VRAM / RAM",
-		RAMBytes:       6000 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		SupportsVision: true,
-		IsPrimary:      true,
-		RecommendedFor: "⭐ MODELO PRIMÁRIO RECOMENDADO (SOTA): Leitura nativa de imagens, OCR avançado de documentos e PDFs escaneados, raciocínio espacial e gestão completa de arquivos com Tool Calling",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
+		ID:            "qwen3-vl:8b",
+		Name:          "Qwen3-VL 8B",
+		Provider:      string(ProviderOllama),
+		SizeGB:        6.0,
+		Vision:        true,
+		Tools:         true,
+		Recommended:   true,
+		ContextWindow: 131072,
+		Notes:         "Padrão do Assistente: lê imagens, faz OCR de documentos e chama ferramentas.",
 	},
 	{
-		ID:             "qwen2.5-vl:7b",
-		Name:           "Qwen 2.5 VL (7B) - Visão Computacional SOTA",
-		Family:         "qwen-vl",
-		Parameters:     "7B",
-		DownloadSize:   "4.8 GB",
-		DownloadBytes:  4800 * 1024 * 1024,
-		RAMRequired:    "~5.5 GB VRAM / RAM",
-		RAMBytes:       5500 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		SupportsVision: true,
-		RecommendedFor: "Modelo Multimodal estabelecido para inspeção visual de fotos, blueprints, OCR em PDFs e comparação visual",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
+		ID:            "qwen2.5vl:7b",
+		Name:          "Qwen2.5-VL 7B",
+		Provider:      string(ProviderOllama),
+		SizeGB:        6.0,
+		Vision:        true,
+		Tools:         false,
+		ContextWindow: 131072,
+		Notes:         "Visão consolidada para fotos e documentos, sem chamada de ferramentas.",
 	},
 	{
-		ID:             "qwen2.5:0.5b",
-		Name:           "Qwen 2.5 (0.5B) - Ultra Leve",
-		Family:         "qwen",
-		Parameters:     "0.5B",
-		DownloadSize:   "398 MB",
-		DownloadBytes:  398 * 1024 * 1024,
-		RAMRequired:    "~400 MB RAM",
-		RAMBytes:       400 * 1024 * 1024,
-		ContextWindow:  32768,
-		SupportsTools:  true,
-		RecommendedFor: "Classificação ultra-rápida de extensões e caminhos em máquinas modestas",
-		Provider:       "ollama",
-		MaxLimitGB:     1,
+		ID:            "gemma3:12b",
+		Name:          "Gemma 3 12B",
+		Provider:      string(ProviderOllama),
+		SizeGB:        8.1,
+		Vision:        true,
+		Tools:         false,
+		ContextWindow: 131072,
+		Notes:         "Multimodal do Google, forte em texto longo; não chama ferramentas.",
 	},
 	{
-		ID:             "llama3.2:1b",
-		Name:           "Llama 3.2 (1B) - Rápido & Compacto",
-		Family:         "llama",
-		Parameters:     "1B",
-		DownloadSize:   "1.3 GB",
-		DownloadBytes:  1300 * 1024 * 1024,
-		RAMRequired:    "~900 MB RAM",
-		RAMBytes:       900 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Triagem rápida de arquivos e detecção de padrões de espaço",
-		Provider:       "ollama",
-		MaxLimitGB:     2,
+		ID:            "qwen3:14b",
+		Name:          "Qwen3 14B",
+		Provider:      string(ProviderOllama),
+		SizeGB:        9.3,
+		Vision:        false,
+		Tools:         true,
+		ContextWindow: 40960,
+		Notes:         "Raciocínio e ferramentas com alta precisão em português; sem visão.",
 	},
 	{
-		ID:             "qwen2.5:1.5b",
-		Name:           "Qwen 2.5 (1.5B) - Campeão de Tools",
-		Family:         "qwen",
-		Parameters:     "1.5B",
-		DownloadSize:   "986 MB",
-		DownloadBytes:  986 * 1024 * 1024,
-		RAMRequired:    "~1.2 GB RAM",
-		RAMBytes:       1200 * 1024 * 1024,
-		ContextWindow:  32768,
-		SupportsTools:  true,
-		RecommendedFor: "Excelente para Tool Calling, JSON estruturado e ações no disco (Recomendado)",
-		Provider:       "ollama",
-		MaxLimitGB:     2,
+		ID:            "gpt-oss:20b",
+		Name:          "GPT-OSS 20B",
+		Provider:      string(ProviderOllama),
+		SizeGB:        14.0,
+		Vision:        false,
+		Tools:         true,
+		ContextWindow: 131072,
+		Notes:         "Modelo aberto da OpenAI com ferramentas nativas; sem visão.",
 	},
 	{
-		ID:             "gemma2:2b",
-		Name:           "Gemma 2 (2B) - Google Research",
-		Family:         "gemma",
-		Parameters:     "2B",
-		DownloadSize:   "1.6 GB",
-		DownloadBytes:  1600 * 1024 * 1024,
-		RAMRequired:    "~1.8 GB RAM",
-		RAMBytes:       1800 * 1024 * 1024,
-		ContextWindow:  8192,
-		SupportsTools:  true,
-		RecommendedFor: "Raciocínio lógico e sumarização concisa de arquivos",
-		Provider:       "ollama",
-		MaxLimitGB:     2,
-	},
-	{
-		ID:             "llama3.2:3b",
-		Name:           "Llama 3.2 (3B) - Equilíbrio Perfeito",
-		Family:         "llama",
-		Parameters:     "3B",
-		DownloadSize:   "2.0 GB",
-		DownloadBytes:  2000 * 1024 * 1024,
-		RAMRequired:    "~2.4 GB RAM",
-		RAMBytes:       2400 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Ótimo balanço entre velocidade, raciocínio e propostas de organização",
-		Provider:       "ollama",
-		MaxLimitGB:     4,
-	},
-	{
-		ID:             "qwen2.5:3b",
-		Name:           "Qwen 2.5 (3B) - Raciocínio & Código",
-		Family:         "qwen",
-		Parameters:     "3B",
-		DownloadSize:   "1.9 GB",
-		DownloadBytes:  1900 * 1024 * 1024,
-		RAMRequired:    "~2.5 GB RAM",
-		RAMBytes:       2500 * 1024 * 1024,
-		ContextWindow:  32768,
-		SupportsTools:  true,
-		RecommendedFor: "Alta precisão em português, análise de código e extração de metadados",
-		Provider:       "ollama",
-		MaxLimitGB:     4,
-	},
-	{
-		ID:             "phi3.5:3.8b",
-		Name:           "Phi-3.5 Mini (3.8B) - Microsoft",
-		Family:         "phi",
-		Parameters:     "3.8B",
-		DownloadSize:   "2.2 GB",
-		DownloadBytes:  2200 * 1024 * 1024,
-		RAMRequired:    "~2.8 GB RAM",
-		RAMBytes:       2800 * 1024 * 1024,
-		ContextWindow:  128000,
-		SupportsTools:  true,
-		RecommendedFor: "Raciocínio lógico, cálculos de espaço e regras estritas",
-		Provider:       "ollama",
-		MaxLimitGB:     4,
-	},
-	{
-		ID:             "deepseek-r1:1.5b",
-		Name:           "DeepSeek-R1 (1.5B) - Raciocínio Leve",
-		Family:         "deepseek",
-		Parameters:     "1.5B",
-		DownloadSize:   "1.1 GB",
-		DownloadBytes:  1100 * 1024 * 1024,
-		RAMRequired:    "~1.4 GB RAM",
-		RAMBytes:       1400 * 1024 * 1024,
-		ContextWindow:  65536,
-		SupportsTools:  true,
-		RecommendedFor: "Raciocínio passo a passo (Chain of Thought) ultraleve para decisões de limpeza",
-		Provider:       "ollama",
-		MaxLimitGB:     2,
-	},
-	{
-		ID:             "qwen2.5:7b",
-		Name:           "Qwen 2.5 (7B) - Estado da Arte",
-		Family:         "qwen",
-		Parameters:     "7B",
-		DownloadSize:   "4.7 GB",
-		DownloadBytes:  4700 * 1024 * 1024,
-		RAMRequired:    "~5.0 GB RAM",
-		RAMBytes:       5000 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Excelente em todas as tarefas: análise de PDF, SQLite, JSON e relatórios profundos",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
-	},
-	{
-		ID:             "llama3.1:8b",
-		Name:           "Llama 3.1 (8B) - Meta Flagship",
-		Family:         "llama",
-		Parameters:     "8B",
-		DownloadSize:   "4.9 GB",
-		DownloadBytes:  4900 * 1024 * 1024,
-		RAMRequired:    "~5.6 GB RAM",
-		RAMBytes:       5600 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Modelo de 8B mais maduro para tool calling e automação",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
-	},
-	{
-		ID:             "deepseek-r1:7b",
-		Name:           "DeepSeek-R1 (7B) - Raciocínio Profundo",
-		Family:         "deepseek",
-		Parameters:     "7B",
-		DownloadSize:   "4.7 GB",
-		DownloadBytes:  4700 * 1024 * 1024,
-		RAMRequired:    "~5.2 GB RAM",
-		RAMBytes:       5200 * 1024 * 1024,
-		ContextWindow:  65536,
-		SupportsTools:  true,
-		RecommendedFor: "Pensamento crítico avançado para decisões complexas de arquivos",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
-	},
-	{
-		ID:             "deepseek-r1:8b",
-		Name:           "DeepSeek-R1 (8B) - Llama Distill",
-		Family:         "deepseek",
-		Parameters:     "8B",
-		DownloadSize:   "4.9 GB",
-		DownloadBytes:  4900 * 1024 * 1024,
-		RAMRequired:    "~5.5 GB RAM",
-		RAMBytes:       5500 * 1024 * 1024,
-		ContextWindow:  65536,
-		SupportsTools:  true,
-		RecommendedFor: "Raciocínio dedutivo refinado destilado no Llama 3.1 8B",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
-	},
-	{
-		ID:             "gemma2:9b",
-		Name:           "Gemma 2 (9B) - Google DeepMind",
-		Family:         "gemma",
-		Parameters:     "9B",
-		DownloadSize:   "5.5 GB",
-		DownloadBytes:  5500 * 1024 * 1024,
-		RAMRequired:    "~6.5 GB RAM",
-		RAMBytes:       6500 * 1024 * 1024,
-		ContextWindow:  8192,
-		SupportsTools:  true,
-		RecommendedFor: "Alta precisão em semântica e categorização taxonômica",
-		Provider:       "ollama",
-		MaxLimitGB:     10,
-	},
-	{
-		ID:             "mistral:7b",
-		Name:           "Mistral (7B) - Versátil & Ágil",
-		Family:         "mistral",
-		Parameters:     "7B",
-		DownloadSize:   "4.1 GB",
-		DownloadBytes:  4100 * 1024 * 1024,
-		RAMRequired:    "~5.0 GB RAM",
-		RAMBytes:       5000 * 1024 * 1024,
-		ContextWindow:  32768,
-		SupportsTools:  true,
-		RecommendedFor: "Resposta rápida e precisa para extração de dados locais",
-		Provider:       "ollama",
-		MaxLimitGB:     8,
-	},
-	{
-		ID:             "qwen2.5:14b",
-		Name:           "Qwen 2.5 (14B) - Inteligência Superior",
-		Family:         "qwen",
-		Parameters:     "14B",
-		DownloadSize:   "9.0 GB",
-		DownloadBytes:  9000 * 1024 * 1024,
-		RAMRequired:    "~10.5 GB RAM",
-		RAMBytes:       10500 * 1024 * 1024,
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Poder de análise massivo para bases de dados complexas, até 16GB de VRAM/RAM",
-		Provider:       "ollama",
-		MaxLimitGB:     16,
-	},
-	{
-		ID:             "deepseek-r1:14b",
-		Name:           "DeepSeek-R1 (14B) - Raciocínio Elite",
-		Family:         "deepseek",
-		Parameters:     "14B",
-		DownloadSize:   "9.0 GB",
-		DownloadBytes:  9000 * 1024 * 1024,
-		RAMRequired:    "~11.0 GB RAM",
-		RAMBytes:       11000 * 1024 * 1024,
-		ContextWindow:  65536,
-		SupportsTools:  true,
-		RecommendedFor: "O modelo mais potente de raciocínio que cabe em máquinas com 16GB",
-		Provider:       "ollama",
-		MaxLimitGB:     16,
+		ID:            "devstral:24b",
+		Name:          "Devstral 24B",
+		Provider:      string(ProviderOllama),
+		SizeGB:        14.0,
+		Vision:        false,
+		Tools:         true,
+		ContextWindow: 131072,
+		Notes:         "Especialista em código e uso de ferramentas; sem visão.",
 	},
 }
 
-// CuratedOpenRouterModels list of popular cloud models accessible via OpenRouter.
+// CuratedOpenRouterModels lists the cloud models offered through OpenRouter.
 var CuratedOpenRouterModels = []ModelInfo{
 	{
-		ID:             "anthropic/claude-3.7-sonnet",
-		Name:           "Claude 3.7 Sonnet (Anthropic)",
-		Family:         "claude",
-		Parameters:     "Frontier",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  200000,
-		SupportsTools:  true,
-		RecommendedFor: "O modelo de IA mais inteligente do mundo para raciocínio, código e ferramentas",
-		Provider:       "openrouter",
-		IsFree:         false,
+		ID:            "anthropic/claude-sonnet-4.5",
+		Name:          "Claude Sonnet 4.5",
+		Provider:      string(ProviderOpenRouter),
+		Vision:        true,
+		Tools:         true,
+		Recommended:   true,
+		ContextWindow: 200000,
+		Notes:         "Executa na nuvem: os caminhos e nomes enviados saem da máquina.",
 	},
 	{
-		ID:             "deepseek/deepseek-r1",
-		Name:           "DeepSeek-R1 (Full 671B)",
-		Family:         "deepseek",
-		Parameters:     "671B",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  64000,
-		SupportsTools:  true,
-		RecommendedFor: "Raciocínio aberto com capacidade máxima de dedução a custo mínimo",
-		Provider:       "openrouter",
-		IsFree:         false,
+		ID:            "google/gemini-2.5-flash",
+		Name:          "Gemini 2.5 Flash",
+		Provider:      string(ProviderOpenRouter),
+		Vision:        true,
+		Tools:         true,
+		ContextWindow: 1000000,
+		Notes:         "Executa na nuvem: os caminhos e nomes enviados saem da máquina.",
 	},
 	{
-		ID:             "google/gemini-2.5-flash",
-		Name:           "Gemini 2.5 Flash (Google)",
-		Family:         "gemini",
-		Parameters:     "Frontier",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  1000000,
-		SupportsTools:  true,
-		RecommendedFor: "Velocidade relâmpago e contexto gigantesco de 1 milhão de tokens",
-		Provider:       "openrouter",
-		IsFree:         false,
+		ID:            "openai/gpt-4o-mini",
+		Name:          "GPT-4o Mini",
+		Provider:      string(ProviderOpenRouter),
+		Vision:        true,
+		Tools:         true,
+		ContextWindow: 128000,
+		Notes:         "Executa na nuvem: os caminhos e nomes enviados saem da máquina.",
 	},
 	{
-		ID:             "openai/gpt-4o-mini",
-		Name:           "GPT-4o Mini (OpenAI)",
-		Family:         "openai",
-		Parameters:     "Frontier",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  128000,
-		SupportsTools:  true,
-		RecommendedFor: "Ultra rápido, confiável e econômico para tarefas de disco",
-		Provider:       "openrouter",
-		IsFree:         false,
-	},
-	{
-		ID:             "qwen/qwen-2.5-72b-instruct",
-		Name:           "Qwen 2.5 (72B Instruct)",
-		Family:         "qwen",
-		Parameters:     "72B",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Poder de modelo de 72B para categorização complexa de grandes acervos",
-		Provider:       "openrouter",
-		IsFree:         false,
-	},
-	{
-		ID:             "meta-llama/llama-3.3-70b-instruct",
-		Name:           "Llama 3.3 (70B Instruct)",
-		Family:         "llama",
-		Parameters:     "70B",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "O ápice dos modelos abertos da Meta com excelente custo",
-		Provider:       "openrouter",
-		IsFree:         false,
-	},
-	{
-		ID:             "meta-llama/llama-3.2-3b-instruct:free",
-		Name:           "Llama 3.2 (3B) [GRATUITO]",
-		Family:         "llama",
-		Parameters:     "3B",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  131072,
-		SupportsTools:  true,
-		RecommendedFor: "Acesso gratuito no OpenRouter para testes rápidos",
-		Provider:       "openrouter",
-		IsFree:         true,
-	},
-	{
-		ID:             "deepseek/deepseek-r1:free",
-		Name:           "DeepSeek-R1 [GRATUITO]",
-		Family:         "deepseek",
-		Parameters:     "671B",
-		DownloadSize:   "Nuvem",
-		RAMRequired:    "0 MB (Nuvem)",
-		ContextWindow:  64000,
-		SupportsTools:  true,
-		RecommendedFor: "Raciocínio profundo gratuito fornecido pela comunidade OpenRouter",
-		Provider:       "openrouter",
-		IsFree:         true,
+		ID:            "qwen/qwen3-vl-8b-instruct",
+		Name:          "Qwen3-VL 8B (nuvem)",
+		Provider:      string(ProviderOpenRouter),
+		Vision:        true,
+		Tools:         true,
+		ContextWindow: 131072,
+		Notes:         "Mesmo modelo do catálogo local, hospedado na nuvem.",
 	},
 }
 
-// GetCatalogResponse returns merged catalog with installed models flags.
+// CatalogResponse is the payload behind GET /api/ai/models.
 type CatalogResponse struct {
-	LocalModels      []ModelInfo `json:"localModels"`
-	OpenRouterModels []ModelInfo `json:"openRouterModels"`
-	InstalledModels  []string    `json:"installedModels"`
-	OllamaOnline     bool        `json:"ollamaOnline"`
-	OllamaVersion    string      `json:"ollamaVersion"`
-	DirectModels     []ModelInfo `json:"directModels"`
+	Models          []ModelInfo `json:"models"`
+	InstalledModels []string    `json:"installedModels"`
+	OllamaOnline    bool        `json:"ollamaOnline"`
+	OllamaVersion   string      `json:"ollamaVersion"`
+	TotalMemoryGB   float64     `json:"totalMemoryGB"`
+	MaxSizeGB       float64     `json:"maxSizeGB"`
+	DefaultModel    string      `json:"defaultModel"`
 }
 
-// BuildCatalog queries local Ollama tags and merges with curated lists.
+// BuildCatalog queries the local Ollama daemon and merges the result with the
+// curated catalogue, using the machine's physical memory to decide FitsMemory.
 func BuildCatalog(ctx context.Context, ollamaEndpoint string) CatalogResponse {
+	return BuildCatalogWithMemory(ctx, ollamaEndpoint, detectTotalMemoryBytes())
+}
+
+// BuildCatalogWithMemory is BuildCatalog with an explicit memory budget, which
+// makes the FitsMemory decision testable. A totalMemoryBytes of 0 means "unknown"
+// and falls back to the catalogue ceiling.
+func BuildCatalogWithMemory(ctx context.Context, ollamaEndpoint string, totalMemoryBytes int64) CatalogResponse {
 	client := NewOllamaClient(ollamaEndpoint)
-	installedMap := make(map[string]bool)
-	installedList := []string{}
-	ollamaOnline := false
-	ollamaVer := ""
 
-	tags, ver, err := client.ListInstalledModels(ctx)
-	if err == nil {
-		ollamaOnline = true
-		ollamaVer = ver
-		for _, t := range tags {
-			installedMap[t] = true
-			// Also match base name (e.g., "qwen2.5:1.5b" matches "qwen2.5:1.5b-instruct")
-			installedMap[strings.ToLower(t)] = true
-			installedList = append(installedList, t)
-		}
+	installed, version, err := client.ListModels(ctx)
+	online := err == nil
+
+	installedNames := make([]string, 0, len(installed))
+	installedByID := make(map[string]InstalledModel, len(installed)*2)
+	for _, m := range installed {
+		installedNames = append(installedNames, m.Name)
+		key := strings.ToLower(m.Name)
+		installedByID[key] = m
+		installedByID[strings.TrimSuffix(key, ":latest")] = m
 	}
 
-	// Clone curated local models and mark isInstalled
-	localModels := make([]ModelInfo, len(CuratedLocalModels))
-	copy(localModels, CuratedLocalModels)
-	for i := range localModels {
-		id := localModels[i].ID
-		if installedMap[id] || installedMap[id+":latest"] || installedMap[strings.Split(id, ":")[0]] {
-			localModels[i].IsInstalled = true
-		}
+	memoryGB := float64(totalMemoryBytes) / (1024 * 1024 * 1024)
+	budgetGB := CatalogMaxSizeGB
+	if memoryGB > 0 {
+		budgetGB = memoryGB - memoryHeadroomGB
 	}
 
-	// Direct Local GGUF models in ./models directory
-	directModels := listDirectGGUFModels()
+	models := make([]ModelInfo, 0, len(CuratedOllamaModels)+len(CuratedOpenRouterModels)+len(installed))
 
-	// If there are installed models not in curated list, add them as well (if <= 16GB)
-	for _, inst := range installedList {
-		alreadyCurated := false
-		for _, m := range localModels {
-			if strings.EqualFold(m.ID, inst) || strings.EqualFold(m.ID+":latest", inst) {
-				alreadyCurated = true
-				break
-			}
-		}
-		if !alreadyCurated {
-			localModels = append(localModels, ModelInfo{
-				ID:             inst,
-				Name:           fmt.Sprintf("Local: %s", inst),
-				Family:         extractFamily(inst),
-				Parameters:     "Detectado",
-				DownloadSize:   "Instalado",
-				RAMRequired:    "Local",
-				ContextWindow:  32768,
-				SupportsTools:  true,
-				IsInstalled:    true,
-				RecommendedFor: "Modelo detectado na sua instalação local do Ollama",
-				Provider:       "ollama",
-				MaxLimitGB:     16,
-			})
-		}
+	for _, m := range CuratedOllamaModels {
+		m.Installed = isInstalled(installedByID, m.ID)
+		m.FitsMemory = m.SizeGB <= budgetGB
+		models = append(models, m)
 	}
 
-	// Sort so installed appear first, then by size
-	sort.SliceStable(localModels, func(i, j int) bool {
-		if localModels[i].IsInstalled != localModels[j].IsInstalled {
-			return localModels[i].IsInstalled // installed first
+	// Models present in Ollama but outside the curated catalogue still deserve to
+	// be selectable: they are already on disk.
+	for _, inst := range installed {
+		if isCurated(inst.Name) {
+			continue
 		}
-		return localModels[i].MaxLimitGB < localModels[j].MaxLimitGB
+		sizeGB := roundGB(float64(inst.SizeBytes) / (1024 * 1024 * 1024))
+		models = append(models, ModelInfo{
+			ID:         inst.Name,
+			Name:       inst.Name,
+			Provider:   string(ProviderOllama),
+			SizeGB:     sizeGB,
+			Installed:  true,
+			FitsMemory: sizeGB <= budgetGB,
+			Notes:      "Detectado na sua instalação local do Ollama; capacidades de visão e ferramentas não verificadas.",
+		})
+	}
+
+	for _, m := range CuratedOpenRouterModels {
+		// Cloud models do not consume local memory.
+		m.FitsMemory = true
+		models = append(models, m)
+	}
+
+	// Installed first, then by size, then by id for a stable order.
+	sort.SliceStable(models, func(i, j int) bool {
+		if models[i].Installed != models[j].Installed {
+			return models[i].Installed
+		}
+		if models[i].Provider != models[j].Provider {
+			return models[i].Provider == string(ProviderOllama)
+		}
+		if models[i].SizeGB != models[j].SizeGB {
+			return models[i].SizeGB < models[j].SizeGB
+		}
+		return models[i].ID < models[j].ID
 	})
 
 	return CatalogResponse{
-		LocalModels:      localModels,
-		OpenRouterModels: CuratedOpenRouterModels,
-		InstalledModels:  installedList,
-		OllamaOnline:     ollamaOnline,
-		OllamaVersion:    ollamaVer,
-		DirectModels:     directModels,
+		Models:          models,
+		InstalledModels: installedNames,
+		OllamaOnline:    online,
+		OllamaVersion:   version,
+		TotalMemoryGB:   roundGB(memoryGB),
+		MaxSizeGB:       CatalogMaxSizeGB,
+		DefaultModel:    DefaultOllamaModel,
 	}
 }
 
-// listDirectGGUFModels inspects the ./models folder for standalone GGUF files.
-func listDirectGGUFModels() []ModelInfo {
-	modelsDir := "models"
-	_ = os.MkdirAll(modelsDir, 0755)
-
-	var result []ModelInfo
-	entries, err := os.ReadDir(modelsDir)
-	if err != nil {
-		return result
+func isInstalled(installedByID map[string]InstalledModel, id string) bool {
+	key := strings.ToLower(id)
+	if _, ok := installedByID[key]; ok {
+		return true
 	}
+	_, ok := installedByID[key+":latest"]
+	return ok
+}
 
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".gguf") {
-			info, errStat := e.Info()
-			sizeStr := "Desconhecido"
-			var sizeBytes int64
-			if errStat == nil {
-				sizeBytes = info.Size()
-				sizeMB := float64(sizeBytes) / (1024 * 1024)
-				if sizeMB >= 1024 {
-					sizeStr = fmt.Sprintf("%.1f GB", sizeMB/1024)
-				} else {
-					sizeStr = fmt.Sprintf("%.0f MB", sizeMB)
-				}
-			}
-
-			result = append(result, ModelInfo{
-				ID:             e.Name(),
-				Name:           fmt.Sprintf("Embutido: %s", e.Name()),
-				Family:         extractFamily(e.Name()),
-				Parameters:     "GGUF Direto",
-				DownloadSize:   sizeStr,
-				DownloadBytes:  sizeBytes,
-				RAMRequired:    sizeStr,
-				ContextWindow:  32768,
-				SupportsTools:  true,
-				IsInstalled:    true,
-				RecommendedFor: "Execução direta in-process sem necessidade de servidor externo",
-				Provider:       "direct",
-				MaxLimitGB:     16,
-			})
+func isCurated(name string) bool {
+	lower := strings.ToLower(strings.TrimSuffix(strings.ToLower(name), ":latest"))
+	for _, m := range CuratedOllamaModels {
+		if strings.ToLower(m.ID) == lower {
+			return true
 		}
 	}
-	return result
+	return false
 }
 
-func extractFamily(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.Contains(lower, "qwen"):
-		return "qwen"
-	case strings.Contains(lower, "gemma"):
-		return "gemma"
-	case strings.Contains(lower, "llama"):
-		return "llama"
-	case strings.Contains(lower, "deepseek"):
-		return "deepseek"
-	case strings.Contains(lower, "phi"):
-		return "phi"
-	case strings.Contains(lower, "mistral"):
-		return "mistral"
-	default:
-		return "general"
+func roundGB(v float64) float64 {
+	if v <= 0 {
+		return 0
 	}
+	return math.Round(v*100) / 100
 }
 
-// FetchOllamaOnlineLibrary tries to fetch the latest model metadata from ollama's library if connected.
-func FetchOllamaOnlineLibrary() ([]ModelInfo, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("GET", "https://ollama.com/library", nil)
-	if err != nil {
-		return CuratedLocalModels, err
+// FindModel returns the catalogue entry for id, if any.
+func FindCuratedModel(id string) (ModelInfo, bool) {
+	for _, m := range CuratedOllamaModels {
+		if strings.EqualFold(m.ID, id) {
+			return m, true
+		}
 	}
-	req.Header.Set("User-Agent", "ScanFilePro/1.0")
-
-	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return CuratedLocalModels, nil // Fallback seamlessly to curated offline list
+	for _, m := range CuratedOpenRouterModels {
+		if strings.EqualFold(m.ID, id) {
+			return m, true
+		}
 	}
-	defer resp.Body.Close()
-	_, _ = io.ReadAll(resp.Body)
+	return ModelInfo{}, false
+}
 
-	return CuratedLocalModels, nil
+// DescribeModel renders a short human-readable line for logs and errors.
+func DescribeModel(m ModelInfo) string {
+	caps := make([]string, 0, 2)
+	if m.Vision {
+		caps = append(caps, "visão")
+	}
+	if m.Tools {
+		caps = append(caps, "ferramentas")
+	}
+	if len(caps) == 0 {
+		caps = append(caps, "somente texto")
+	}
+	return fmt.Sprintf("%s (%.1f GB, %s)", m.Name, m.SizeGB, strings.Join(caps, " + "))
 }
