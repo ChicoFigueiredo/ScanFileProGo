@@ -25,6 +25,9 @@ jobs:
   test:
     name: Lint & Testes Automatizados
     runs-on: windows-latest
+    env:
+      # O detector de corrida (-race) exige CGO habilitado.
+      CGO_ENABLED: '1'
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
@@ -34,9 +37,13 @@ jobs:
       - name: Configurar Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          check-latest: true
+          go-version-file: go.mod
           cache: true
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Baixar Dependências
         run: go mod download
@@ -44,8 +51,21 @@ jobs:
       - name: Executar go vet
         run: go vet ./...
 
-      - name: Executar Testes Unitários
+      - name: Executar Testes Unitários (com detector de corrida)
         run: go test -v -race ./...
+
+      - name: Executar Testes da Interface (node --test)
+        shell: pwsh
+        run: |
+          # Padrao entre aspas: o Node recente nao expande um diretorio em --test
+          # e o PowerShell nao expande curingas para comandos nativos; quem faz o
+          # glob e o proprio Node.
+          if (Test-Path 'ui/tests') {
+            node --test "ui/tests/**/*.test.mjs"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host 'Diretorio ui/tests ausente; etapa ignorada.'
+          }
 
   # ====================================================
   # JOB 2: Cálculo de Versão Semântica (Auto Minor Increment)
@@ -82,9 +102,8 @@ jobs:
           elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
             # Buscar a maior tag semântica existente
             LATEST_TAG=$(git tag -l "v*.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
-            
+
             if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="v0.1.0"
               NEW_MAJOR=0
               NEW_MINOR=1
               NEW_PATCH=0
@@ -93,14 +112,13 @@ jobs:
               RAW_VER="${LATEST_TAG#v}"
               MAJOR=$(echo "$RAW_VER" | cut -d. -f1)
               MINOR=$(echo "$RAW_VER" | cut -d. -f2)
-              PATCH=$(echo "$RAW_VER" | cut -d. -f3)
-              
+
               # A menos que dito o contrário, incrementa a Minor version
               NEW_MAJOR=$MAJOR
               NEW_MINOR=$((MINOR + 1))
               NEW_PATCH=0
             fi
-            
+
             CLEAN_VER="${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
             TAG_NAME="v${CLEAN_VER}"
             IS_RELEASE="true"
@@ -129,6 +147,9 @@ jobs:
     name: Build do Executável Windows
     needs: [test, version]
     runs-on: windows-latest
+    env:
+      # Binário autocontido, sem dependência de runtime C.
+      CGO_ENABLED: '0'
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
@@ -138,8 +159,7 @@ jobs:
       - name: Configurar Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          check-latest: true
+          go-version-file: go.mod
           cache: true
 
       - name: Compilar scanfile.exe com Injeção de Versão
@@ -147,11 +167,11 @@ jobs:
         run: |
           $ver = "${{ needs.version.outputs.version }}"
           $commit = $env:GITHUB_SHA.Substring(0, 7)
-          $buildDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss UTC")
-          
+          $buildDate = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss") + " UTC"
+
           Write-Host "Compilando ScanFile Pro v$ver (Commit: $commit, Data: $buildDate)..."
           $ldflags = "-s -w -X 'main.Version=$ver' -X 'main.Commit=$commit' -X 'main.Date=$buildDate'"
-          go build -ldflags $ldflags -o scanfile.exe main.go
+          go build -ldflags $ldflags -o scanfile.exe .
 
       - name: Validar Executável Gerado
         shell: pwsh
@@ -162,10 +182,10 @@ jobs:
         shell: pwsh
         run: |
           $ver = "${{ needs.version.outputs.version }}"
-          New-Item -ItemType Directory -Force -Path dist
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
           $zipName = "scanfile-v$ver-windows-amd64.zip"
-          Compress-Archive -Path scanfile.exe, README.md, docs -DestinationPath "dist/$zipName" -Force
-          
+          Compress-Archive -Path scanfile.exe, README.md, LICENSE, docs -DestinationPath "dist/$zipName" -Force
+
           # Gerar SHA256 Checksum
           $hash = (Get-FileHash -Path "dist/$zipName" -Algorithm SHA256).Hash
           "$hash  $zipName" | Out-File -FilePath dist/checksums-sha256.txt -Encoding utf8
