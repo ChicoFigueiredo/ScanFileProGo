@@ -72,20 +72,34 @@ func (fidx *FolderDuplicateIndex) IsDirty() bool {
 
 // RebuildIfDirty rebuilds the index only when MarkDirty was called since the
 // last rebuild, and reports whether the rebuild actually happened.
+//
+// O sinalizador é baixado aqui, antes de esperar o lock e antes de ler a
+// árvore, e nunca mais é tocado depois disso: qualquer MarkDirty levantado
+// durante a reconstrução — enquanto ela espera o lock ou enquanto caminha —
+// continua de pé e pede outra reconstrução. Limpar depois de começar a ler
+// engoliria essa marcação e deixaria a visão de Pastas Clones velha para
+// sempre. Uma reconstrução a mais é barata; uma marcação perdida, não.
 func (fidx *FolderDuplicateIndex) RebuildIfDirty(tm *scanner.TreeManager) bool {
 	if tm == nil || !fidx.dirty.CompareAndSwap(true, false) {
 		return false
 	}
-	fidx.RebuildFolderIndex(tm)
+	fidx.rebuild(tm)
 	return true
 }
 
 // RebuildFolderIndex traverses the tree in a single bottom-up pass and identifies identical duplicate folders.
 func (fidx *FolderDuplicateIndex) RebuildFolderIndex(tm *scanner.TreeManager) {
+	// Mesma ordem de RebuildIfDirty: baixa o sinalizador antes de ler a árvore.
+	fidx.dirty.Store(false)
+	fidx.rebuild(tm)
+}
+
+// rebuild does the traversal itself. It never touches the dirty flag: whoever
+// asked for the rebuild already lowered it before the tree was read.
+func (fidx *FolderDuplicateIndex) rebuild(tm *scanner.TreeManager) {
 	fidx.mu.Lock()
 	defer fidx.mu.Unlock()
 
-	fidx.dirty.Store(false)
 	fidx.groups = make(map[string]*DuplicateFolderGroup)
 
 	// Step 1: Collect folder summaries using a single-pass post-order bottom-up Merkle traversal O(N)
