@@ -152,16 +152,16 @@ func (tc *MCPToolsContext) ClassifyFiles(ctx context.Context, params ClassifyFil
 
 		for _, group := range qRes.Groups {
 			for i, f := range group.Files {
-				if params.Directory != "" && !strings.HasPrefix(strings.ToLower(f.Path), strings.ToLower(params.Directory)) {
+				if params.Directory != "" && !strings.HasPrefix(strings.ToLower(f.Path()), strings.ToLower(params.Directory)) {
 					continue
 				}
 				results = append(results, ClassifiedFileItem{
-					Path:        f.Path,
-					Name:        f.Name,
-					Extension:   f.Extension,
+					Path:        f.Path(),
+					Name:        f.Name(),
+					Extension:   f.Extension(),
 					SizeBytes:   f.Size,
 					SizeDisplay: formatBytes(f.Size),
-					ModTime:     time.Unix(f.ModTime, 0).Format("2006-01-02 15:04"),
+					ModTime:     time.Unix(f.ModTime(), 0).Format("2006-01-02 15:04"),
 					IsDuplicate: i > 0,
 					Hash:        group.Hash,
 				})
@@ -193,7 +193,7 @@ func (tc *MCPToolsContext) ClassifyFiles(ctx context.Context, params ClassifyFil
 			}
 			// Inspect files in dir
 			for _, f := range dir.Files {
-				if params.Directory != "" && !strings.HasPrefix(strings.ToLower(f.Path), strings.ToLower(params.Directory)) {
+				if params.Directory != "" && !strings.HasPrefix(strings.ToLower(f.Path()), strings.ToLower(params.Directory)) {
 					continue
 				}
 				if minBytes > 0 && f.Size < minBytes {
@@ -203,24 +203,24 @@ func (tc *MCPToolsContext) ClassifyFiles(ctx context.Context, params ClassifyFil
 					continue
 				}
 				if len(extMap) > 0 {
-					ext := strings.ToLower(f.Extension)
+					ext := strings.ToLower(f.Extension())
 					if !extMap[ext] {
 						continue
 					}
 				}
-				if params.NamePattern != "" && !strings.Contains(strings.ToLower(f.Name), strings.ToLower(params.NamePattern)) {
+				if params.NamePattern != "" && !strings.Contains(strings.ToLower(f.Name()), strings.ToLower(params.NamePattern)) {
 					continue
 				}
 
 				results = append(results, ClassifiedFileItem{
-					Path:        f.Path,
-					Name:        f.Name,
-					Extension:   f.Extension,
+					Path:        f.Path(),
+					Name:        f.Name(),
+					Extension:   f.Extension(),
 					SizeBytes:   f.Size,
 					SizeDisplay: formatBytes(f.Size),
-					ModTime:     time.Unix(f.ModTime, 0).Format("2006-01-02 15:04"),
-					IsDuplicate: f.Hash != "",
-					Hash:        f.Hash,
+					ModTime:     time.Unix(f.ModTime(), 0).Format("2006-01-02 15:04"),
+					IsDuplicate: f.Hash() != "",
+					Hash:        f.Hash(),
 				})
 
 				if len(results) >= params.Limit {
@@ -326,7 +326,7 @@ func (tc *MCPToolsContext) AnalyzeFileContent(ctx context.Context, params Analyz
 		if err == nil {
 			res.FileType = fmt.Sprintf("Imagem %s (%s)", strings.ToUpper(imgRes.Format), imgRes.AspectRatio)
 			res.MIMEType = "image/" + strings.TrimPrefix(ext, ".")
-			res.Summary = fmt.Sprintf("Imagem %s (%dx%d, %s). Categoria: %s. %s", 
+			res.Summary = fmt.Sprintf("Imagem %s (%dx%d, %s). Categoria: %s. %s",
 				imgRes.Format, imgRes.Width, imgRes.Height, imgRes.SizeDisplay, imgRes.SuggestedCategory, imgRes.VisualDescription)
 			if imgRes.DetectedTextOCR != "" {
 				res.SampleText = fmt.Sprintf("=== TEXTO DETECTADO VIA OCR (Qwen3-VL) ===\n%s", imgRes.DetectedTextOCR)

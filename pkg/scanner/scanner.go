@@ -619,8 +619,7 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 			modTime, createTime, accessTime := ExtractFileTimestamps(info)
 			ext := strings.ToLower(filepath.Ext(name))
 
-			fileNode := &FileNode{
-				Path:          fullPath,
+			fileNode := NewFileNode(FileMeta{
 				Name:          name,
 				Size:          size,
 				AllocatedSize: allocatedSize,
@@ -629,7 +628,7 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 				CreateTime:    createTime,
 				AccessTime:    accessTime,
 				Extension:     ext,
-			}
+			})
 
 			// Quick Scan Hash & Metadata Reuse
 			if config.QuickScanMode {
@@ -642,10 +641,10 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 					if cached, exists := lookup[normPath]; exists && cached != nil {
 						// Só reaproveita hash calculado com o algoritmo atual
 						// (achado M14).
-						if cached.Size == size && cached.ModTime == modTime && HashMatchesAlgorithm(cached.Hash, algo) {
-							fileNode.Hash = cached.Hash
-							fileNode.QuickHash = cached.QuickHash
-							fileNode.IsReusedFromCache = true
+						if cached.Size == size && cached.ModTime() == modTime && HashMatchesAlgorithm(cached.Hash(), algo) {
+							fileNode.SetHash(cached.Hash())
+							fileNode.SetQuickHash(cached.QuickHash())
+							fileNode.SetReusedFromCache(true)
 							s.reusedFiles.Add(1)
 							s.reusedBytes.Add(size)
 						} else {
@@ -659,8 +658,7 @@ func (s *Scanner) scanDirectory(ctx context.Context, dirPath string, queue *DirW
 
 			if isSymlinkOrJunction {
 				target, _ := os.Readlink(fullPath)
-				fileNode.IsSymlink = true
-				fileNode.LinkTarget = target
+				fileNode.SetSymlink(target)
 			}
 
 			dirFiles = append(dirFiles, fileNode)

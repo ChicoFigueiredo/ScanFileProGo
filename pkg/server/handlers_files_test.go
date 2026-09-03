@@ -54,13 +54,7 @@ func writeTempFile(t *testing.T, dir, name string, size int) string {
 // indexFile registers a file in the árvore and in the índice, as a Varredura
 // would.
 func indexFile(app *AppServer, path string, size int64, hash string) *scanner.FileNode {
-	node := &scanner.FileNode{
-		Path:      path,
-		Name:      filepath.Base(path),
-		Size:      size,
-		Hash:      hash,
-		Extension: strings.ToLower(filepath.Ext(path)),
-	}
+	node := scanner.NewFileNodeAt(path, scanner.FileMeta{Name: filepath.Base(path), Size: size, Hash: hash, Extension: strings.ToLower(filepath.Ext(path))})
 	app.Tree.AddFile(node)
 	app.Index.UpsertFile(node)
 	return node

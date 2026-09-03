@@ -212,17 +212,17 @@ func computeAndCollectFolderMerkle(node *scanner.DirNode, list *[]*FolderSummary
 
 	// Sort direct files deterministically by Name
 	sort.Slice(directFiles, func(i, j int) bool {
-		return directFiles[i].Name < directFiles[j].Name
+		return directFiles[i].Name() < directFiles[j].Name()
 	})
 	for _, f := range directFiles {
-		h := f.Hash
+		h := f.Hash()
 		if h == "" {
 			// No content hash available: fall back to size + modification time,
 			// and remember that this folder cannot claim hash confidence.
-			h = fmt.Sprintf("sz:%d|mt:%d", f.Size, f.ModTime)
+			h = fmt.Sprintf("sz:%d|mt:%d", f.Size, f.ModTime())
 			allHashed = false
 		}
-		_, _ = hasher.WriteString(fmt.Sprintf("F|%s|%d|%s\n", f.Name, f.Size, h))
+		_, _ = hasher.WriteString(fmt.Sprintf("F|%s|%d|%s\n", f.Name(), f.Size, h))
 	}
 
 	// Sort subdirectories deterministically by Name
@@ -494,14 +494,14 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 
 	mapA := make(map[string]*scanner.FileNode)
 	for _, f := range filesA {
-		rel, _ := filepath.Rel(pathA_, f.Path)
+		rel, _ := filepath.Rel(pathA_, f.Path())
 		rel = strings.ReplaceAll(rel, "\\", "/")
 		mapA[rel] = f
 	}
 
 	mapB := make(map[string]*scanner.FileNode)
 	for _, f := range filesB {
-		rel, _ := filepath.Rel(pathB_, f.Path)
+		rel, _ := filepath.Rel(pathB_, f.Path())
 		rel = strings.ReplaceAll(rel, "\\", "/")
 		mapB[rel] = f
 	}
@@ -528,14 +528,14 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 	// Starts optimistic and is downgraded by the first file lacking a hash.
 	confidence := ConfidenceHash
 	for _, f := range filesA {
-		if f.Hash == "" {
+		if f.Hash() == "" {
 			confidence = ConfidenceSizeMTime
 			break
 		}
 	}
 	if confidence == ConfidenceHash {
 		for _, f := range filesB {
-			if f.Hash == "" {
+			if f.Hash() == "" {
 				confidence = ConfidenceSizeMTime
 				break
 			}
@@ -549,12 +549,12 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 		if inA && inB {
 			// Compare hashes or sizes
 			isSame := false
-			if fA.Hash != "" && fB.Hash != "" {
-				isSame = (fA.Hash == fB.Hash) && (fA.Size == fB.Size)
+			if fA.Hash() != "" && fB.Hash() != "" {
+				isSame = (fA.Hash() == fB.Hash()) && (fA.Size == fB.Size)
 			} else {
 				// Without hashes the comparison is a heuristic, never proof.
 				confidence = ConfidenceSizeMTime
-				isSame = (fA.Size == fB.Size) && (fA.ModTime == fB.ModTime)
+				isSame = (fA.Size == fB.Size) && (fA.ModTime() == fB.ModTime())
 			}
 
 			if isSame {
@@ -565,10 +565,10 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 					Status:       "IDENTICAL",
 					SizeA:        fA.Size,
 					SizeB:        fB.Size,
-					HashA:        fA.Hash,
-					HashB:        fB.Hash,
-					ModTimeA:     fA.ModTime,
-					ModTimeB:     fB.ModTime,
+					HashA:        fA.Hash(),
+					HashB:        fB.Hash(),
+					ModTimeA:     fA.ModTime(),
+					ModTimeB:     fB.ModTime(),
 				})
 			} else {
 				modifiedCount++
@@ -577,10 +577,10 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 					Status:       "MODIFIED",
 					SizeA:        fA.Size,
 					SizeB:        fB.Size,
-					HashA:        fA.Hash,
-					HashB:        fB.Hash,
-					ModTimeA:     fA.ModTime,
-					ModTimeB:     fB.ModTime,
+					HashA:        fA.Hash(),
+					HashB:        fB.Hash(),
+					ModTimeA:     fA.ModTime(),
+					ModTimeB:     fB.ModTime(),
 				})
 			}
 		} else if inA && !inB {
@@ -590,8 +590,8 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 				RelativePath: rel,
 				Status:       "ONLY_IN_A",
 				SizeA:        fA.Size,
-				HashA:        fA.Hash,
-				ModTimeA:     fA.ModTime,
+				HashA:        fA.Hash(),
+				ModTimeA:     fA.ModTime(),
 			})
 		} else if !inA && inB {
 			onlyInBCount++
@@ -600,8 +600,8 @@ func CompareFolders(tm *scanner.TreeManager, pathA, pathB string) (*FolderCompar
 				RelativePath: rel,
 				Status:       "ONLY_IN_B",
 				SizeB:        fB.Size,
-				HashB:        fB.Hash,
-				ModTimeB:     fB.ModTime,
+				HashB:        fB.Hash(),
+				ModTimeB:     fB.ModTime(),
 			})
 		}
 	}

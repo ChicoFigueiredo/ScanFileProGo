@@ -11,45 +11,15 @@ func TestFolderIndex_DuplicateFoldersAndCompare(t *testing.T) {
 	tm.GetOrCreateRoot("C:\\")
 
 	// Create Folder A
-	fA1 := &scanner.FileNode{
-		Path:      "C:\\FolderA\\doc.txt",
-		Name:      "doc.txt",
-		Size:      100,
-		Hash:      "xxh64:111111",
-		Extension: ".txt",
-	}
-	fA2 := &scanner.FileNode{
-		Path:      "C:\\FolderA\\sub\\image.png",
-		Name:      "image.png",
-		Size:      500,
-		Hash:      "xxh64:222222",
-		Extension: ".png",
-	}
+	fA1 := scanner.NewFileNodeAt("C:\\FolderA\\doc.txt", scanner.FileMeta{Name: "doc.txt", Size: 100, Hash: "xxh64:111111", Extension: ".txt"})
+	fA2 := scanner.NewFileNodeAt("C:\\FolderA\\sub\\image.png", scanner.FileMeta{Name: "image.png", Size: 500, Hash: "xxh64:222222", Extension: ".png"})
 
 	// Create Folder B (Exact identical clone of Folder A)
-	fB1 := &scanner.FileNode{
-		Path:      "C:\\FolderB\\doc.txt",
-		Name:      "doc.txt",
-		Size:      100,
-		Hash:      "xxh64:111111",
-		Extension: ".txt",
-	}
-	fB2 := &scanner.FileNode{
-		Path:      "C:\\FolderB\\sub\\image.png",
-		Name:      "image.png",
-		Size:      500,
-		Hash:      "xxh64:222222",
-		Extension: ".png",
-	}
+	fB1 := scanner.NewFileNodeAt("C:\\FolderB\\doc.txt", scanner.FileMeta{Name: "doc.txt", Size: 100, Hash: "xxh64:111111", Extension: ".txt"})
+	fB2 := scanner.NewFileNodeAt("C:\\FolderB\\sub\\image.png", scanner.FileMeta{Name: "image.png", Size: 500, Hash: "xxh64:222222", Extension: ".png"})
 
 	// Create Folder C (Different content)
-	fC1 := &scanner.FileNode{
-		Path:      "C:\\FolderC\\doc.txt",
-		Name:      "doc.txt",
-		Size:      200,
-		Hash:      "xxh64:333333",
-		Extension: ".txt",
-	}
+	fC1 := scanner.NewFileNodeAt("C:\\FolderC\\doc.txt", scanner.FileMeta{Name: "doc.txt", Size: 200, Hash: "xxh64:333333", Extension: ".txt"})
 
 	tm.AddFile(fA1)
 	tm.AddFile(fA2)

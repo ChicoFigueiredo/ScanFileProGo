@@ -14,10 +14,10 @@ func buildTwinFolders(hashed bool) *scanner.TreeManager {
 	if hashed {
 		hashA, hashB = "xxh64:111111", "xxh64:222222"
 	}
-	tm.AddFile(&scanner.FileNode{Path: "C:\\FolderA\\doc.txt", Name: "doc.txt", Size: 100, ModTime: 7, Hash: hashA})
-	tm.AddFile(&scanner.FileNode{Path: "C:\\FolderA\\sub\\img.png", Name: "img.png", Size: 500, ModTime: 8, Hash: hashB})
-	tm.AddFile(&scanner.FileNode{Path: "C:\\FolderB\\doc.txt", Name: "doc.txt", Size: 100, ModTime: 7, Hash: hashA})
-	tm.AddFile(&scanner.FileNode{Path: "C:\\FolderB\\sub\\img.png", Name: "img.png", Size: 500, ModTime: 8, Hash: hashB})
+	tm.AddFile(scanner.NewFileNodeAt("C:\\FolderA\\doc.txt", scanner.FileMeta{Name: "doc.txt", Size: 100, ModTime: 7, Hash: hashA}))
+	tm.AddFile(scanner.NewFileNodeAt("C:\\FolderA\\sub\\img.png", scanner.FileMeta{Name: "img.png", Size: 500, ModTime: 8, Hash: hashB}))
+	tm.AddFile(scanner.NewFileNodeAt("C:\\FolderB\\doc.txt", scanner.FileMeta{Name: "doc.txt", Size: 100, ModTime: 7, Hash: hashA}))
+	tm.AddFile(scanner.NewFileNodeAt("C:\\FolderB\\sub\\img.png", scanner.FileMeta{Name: "img.png", Size: 500, ModTime: 8, Hash: hashB}))
 	return tm
 }
 
@@ -65,8 +65,8 @@ func TestFolderIndex_ConfidenceFallsBackWithoutHashes(t *testing.T) {
 
 func TestFolderIndex_PartiallyHashedFolderIsNotFullyHashed(t *testing.T) {
 	tm := scanner.NewTreeManager()
-	tm.AddFile(&scanner.FileNode{Path: "C:\\Mix\\a.txt", Name: "a.txt", Size: 10, ModTime: 1, Hash: "xxh64:aaaa"})
-	tm.AddFile(&scanner.FileNode{Path: "C:\\Mix\\sub\\b.txt", Name: "b.txt", Size: 20, ModTime: 2, Hash: ""})
+	tm.AddFile(scanner.NewFileNodeAt("C:\\Mix\\a.txt", scanner.FileMeta{Name: "a.txt", Size: 10, ModTime: 1, Hash: "xxh64:aaaa"}))
+	tm.AddFile(scanner.NewFileNodeAt("C:\\Mix\\sub\\b.txt", scanner.FileMeta{Name: "b.txt", Size: 20, ModTime: 2, Hash: ""}))
 
 	fidx := NewFolderDuplicateIndex()
 	fidx.RebuildFolderIndex(tm)

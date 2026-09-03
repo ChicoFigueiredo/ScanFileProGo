@@ -90,7 +90,7 @@ func TestStartScan_ScansRepeatedDirectoryNames(t *testing.T) {
 
 	var found bool
 	tm.IterateFiles(func(f *FileNode) bool {
-		if filepath.Base(f.Path) == "alvo.txt" {
+		if filepath.Base(f.Path()) == "alvo.txt" {
 			found = true
 			return false
 		}
@@ -484,7 +484,7 @@ func TestStartScan_QuickScanRejectsForeignAlgorithm(t *testing.T) {
 	s := NewScanner(tm)
 	defer s.CloseLogger()
 	s.SetQuickScanLookup(map[string]*FileNode{
-		key: {Path: target, Size: 256, ModTime: modTime, Hash: "sha256:aaaabbbb", QuickHash: 99},
+		key: NewFileNodeAt(target, FileMeta{Size: 256, ModTime: modTime, Hash: "sha256:aaaabbbb", QuickHash: 99}),
 	})
 	if err := s.StartScan(context.Background(), ScanConfig{
 		Roots:         []string{root},
@@ -499,7 +499,7 @@ func TestStartScan_QuickScanRejectsForeignAlgorithm(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("esperava 1 arquivo, obtive %d", len(files))
 	}
-	if files[0].Hash != "" || files[0].IsReusedFromCache {
+	if files[0].Hash() != "" || files[0].IsReusedFromCache() {
 		t.Errorf("hash de outro algoritmo não deveria ser reaproveitado: %+v", files[0])
 	}
 	if got := s.GetStatus().ReusedFilesCount; got != 0 {
@@ -514,7 +514,7 @@ func TestStartScan_QuickScanRejectsForeignAlgorithm(t *testing.T) {
 	s2 := NewScanner(tm2)
 	defer s2.CloseLogger()
 	s2.SetQuickScanLookup(map[string]*FileNode{
-		key: {Path: target, Size: 256, ModTime: modTime, Hash: "xxh64:0123456789abcdef", QuickHash: 99},
+		key: NewFileNodeAt(target, FileMeta{Size: 256, ModTime: modTime, Hash: "xxh64:0123456789abcdef", QuickHash: 99}),
 	})
 	if err := s2.StartScan(context.Background(), ScanConfig{
 		Roots:         []string{root},
@@ -525,7 +525,7 @@ func TestStartScan_QuickScanRejectsForeignAlgorithm(t *testing.T) {
 		t.Fatal(err)
 	}
 	files2 := tm2.GetAllFiles()
-	if len(files2) != 1 || files2[0].Hash != "xxh64:0123456789abcdef" || !files2[0].IsReusedFromCache {
+	if len(files2) != 1 || files2[0].Hash() != "xxh64:0123456789abcdef" || !files2[0].IsReusedFromCache() {
 		t.Errorf("hash do mesmo algoritmo deveria ser reaproveitado: %+v", files2)
 	}
 	if got := s2.GetStatus().ReusedFilesCount; got != 1 {

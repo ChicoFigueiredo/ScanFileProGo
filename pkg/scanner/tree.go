@@ -131,12 +131,7 @@ func (tm *TreeManager) GetOrCreateRoot(rootPath string) *DirNode {
 		}
 	}
 
-	root := &DirNode{
-		Path:     rootKey,
-		Name:     rootKey,
-		Children: make(map[string]*DirNode),
-		Files:    make([]*FileNode, 0),
-	}
+	root := &DirNode{Name: rootKey}
 	tm.Roots[rootKey] = root
 	tm.changes.Add(1)
 	return root
@@ -196,14 +191,8 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 			}
 		}
 		if !ok {
-			childPath := filepath.Join(curr.Path, part)
-			child = &DirNode{
-				Path:     childPath,
-				Name:     part,
-				Children: make(map[string]*DirNode),
-				Files:    make([]*FileNode, 0),
-			}
-			curr.Children[part] = child
+			child = &DirNode{parent: curr, Name: part}
+			curr.setChildLocked(part, child)
 			curr.SubDirCount++
 			created = true
 		}
@@ -221,16 +210,15 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 func (tm *TreeManager) FastSetDir(dirPath string, files []*FileNode, subDirNames []string) *DirNode {
 	node := tm.EnsureDirNode(dirPath)
 	node.mu.Lock()
+	for _, f := range files {
+		if f != nil {
+			f.parent = node
+		}
+	}
 	node.Files = files
 	for _, sub := range subDirNames {
 		if _, ok := node.Children[sub]; !ok {
-			childPath := filepath.Join(dirPath, sub)
-			node.Children[sub] = &DirNode{
-				Path:     childPath,
-				Name:     sub,
-				Children: make(map[string]*DirNode),
-				Files:    make([]*FileNode, 0),
-			}
+			node.setChildLocked(sub, &DirNode{parent: node, Name: sub})
 		}
 	}
 	node.SubDirCount = int64(len(node.Children))
@@ -274,11 +262,11 @@ func computeNodeSize(node *DirNode) (totalSize int64, totalAllocated int64, file
 	for _, f := range node.Files {
 		directSize += f.Size
 		alloc := f.AllocatedSize
-		if alloc == 0 && f.Size > 0 && !f.IsCompressed {
+		if alloc == 0 && f.Size > 0 && !f.IsCompressed() {
 			alloc = f.Size
 		}
 		directAllocated += alloc
-		if f.IsCompressed {
+		if f.IsCompressed() {
 			directCompressed++
 		}
 	}
@@ -314,11 +302,26 @@ func computeNodeSize(node *DirNode) (totalSize int64, totalAllocated int64, file
 }
 
 // AddFile inserts a file into the tree and updates parent directories.
+//
+// O nó precisa saber onde mora: use NewFileNodeAt (que já monta a pasta a
+// partir do caminho completo) ou AddFileAt, que recebe a pasta explicitamente.
 func (tm *TreeManager) AddFile(file *FileNode) {
-	dirPath := filepath.Dir(file.Path)
+	if file == nil {
+		return
+	}
+	tm.AddFileAt(filepath.Dir(file.Path()), file)
+}
+
+// AddFileAt insere um arquivo sob dirPath, adotando o nó: a pasta passa a ser o
+// pai dele e o caminho completo passa a ser derivado dali.
+func (tm *TreeManager) AddFileAt(dirPath string, file *FileNode) {
+	if file == nil {
+		return
+	}
 	dirNode := tm.EnsureDirNode(dirPath)
 
 	dirNode.mu.Lock()
+	file.parent = dirNode
 	dirNode.Files = append(dirNode.Files, file)
 	dirNode.FileCount++
 	dirNode.TotalSize += file.Size
@@ -424,12 +427,14 @@ func (tm *TreeManager) RemoveFile(filePath string) (int64, bool) {
 		return 0, false
 	}
 
+	base := filepath.Base(filePath)
+
 	dirNode.mu.Lock()
 	var removedSize int64
 	var found bool
 	newFiles := make([]*FileNode, 0, len(dirNode.Files))
 	for _, f := range dirNode.Files {
-		if f.Path == filePath {
+		if f != nil && f.name == base {
 			removedSize = f.Size
 			found = true
 		} else {
@@ -481,9 +486,11 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth, maxFi
 		return nil
 	}
 
+	nodePath := node.Path()
+
 	node.mu.RLock()
 	summary := &DirSummary{
-		Path:                node.Path,
+		Path:                nodePath,
 		Name:                node.Name,
 		TotalSize:           node.TotalSize,
 		TotalAllocatedSize:  node.TotalAllocatedSize,
@@ -491,9 +498,6 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth, maxFi
 		DirectFileCount:     int64(len(node.Files)),
 		CompressedFileCount: node.CompressedFileCount,
 		SubDirCount:         node.SubDirCount,
-		ModTime:             node.ModTime,
-		CreateTime:          node.CreateTime,
-		AccessTime:          node.AccessTime,
 		IsSymlink:           node.IsSymlink,
 		LinkTarget:          node.LinkTarget,
 	}
@@ -575,10 +579,10 @@ func (tm *TreeManager) GetFilesPage(path string, offset, limit int, sortBy strin
 	switch sortBy {
 	case SortNameAsc:
 		sort.Slice(files, func(i, j int) bool {
-			return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+			return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
 		})
 	case SortModDesc:
-		sort.Slice(files, func(i, j int) bool { return files[i].ModTime > files[j].ModTime })
+		sort.Slice(files, func(i, j int) bool { return files[i].ModTime() > files[j].ModTime() })
 	default:
 		sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
 	}
@@ -616,7 +620,7 @@ func (tm *TreeManager) AggregateExtensionStats() []*ExtensionStatResult {
 	var grandTotalBytes int64
 
 	tm.IterateFiles(func(f *FileNode) bool {
-		ext := strings.ToLower(f.Extension)
+		ext := strings.ToLower(f.Extension())
 		if ext == "" {
 			ext = "(sem extensão)"
 		}
@@ -768,9 +772,11 @@ func (node *DirNode) GetChildren() []*DirNode {
 	return children
 }
 
-// GetInfo returns a snapshot copy of the DirNode's scalar fields.
+// GetInfo returns a snapshot copy of the DirNode's scalar fields. O modTime
+// devolvido é sempre 0: DirNode nunca guardou data própria (ADR-0001).
 func (node *DirNode) GetInfo() (path, name string, totalSize, fileCount, subDirCount, modTime int64) {
+	path = node.Path()
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	return node.Path, node.Name, node.TotalSize, node.FileCount, node.SubDirCount, node.ModTime
+	return path, node.Name, node.TotalSize, node.FileCount, node.SubDirCount, 0
 }

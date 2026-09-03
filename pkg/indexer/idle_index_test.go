@@ -17,31 +17,13 @@ func TestIdleFiles_StreamingAndPagination(t *testing.T) {
 	tenDaysAgo := now - (10 * 86400)
 
 	// File 1: 2 years idle, 500MB
-	tm.AddFile(&scanner.FileNode{
-		Path:      "C:\\Backup\\old_archive.zip",
-		Name:      "old_archive.zip",
-		Size:      500 * 1024 * 1024,
-		ModTime:   twoYearsAgo,
-		Extension: ".zip",
-	})
+	tm.AddFile(scanner.NewFileNodeAt("C:\\Backup\\old_archive.zip", scanner.FileMeta{Name: "old_archive.zip", Size: 500 * 1024 * 1024, ModTime: twoYearsAgo, Extension: ".zip"}))
 
 	// File 2: 6 months idle, 100MB
-	tm.AddFile(&scanner.FileNode{
-		Path:      "C:\\Videos\\clip.mp4",
-		Name:      "clip.mp4",
-		Size:      100 * 1024 * 1024,
-		ModTime:   sixMonthsAgo,
-		Extension: ".mp4",
-	})
+	tm.AddFile(scanner.NewFileNodeAt("C:\\Videos\\clip.mp4", scanner.FileMeta{Name: "clip.mp4", Size: 100 * 1024 * 1024, ModTime: sixMonthsAgo, Extension: ".mp4"}))
 
 	// File 3: 10 days idle, 20MB
-	tm.AddFile(&scanner.FileNode{
-		Path:      "C:\\Docs\\notes.txt",
-		Name:      "notes.txt",
-		Size:      20 * 1024 * 1024,
-		ModTime:   tenDaysAgo,
-		Extension: ".txt",
-	})
+	tm.AddFile(scanner.NewFileNodeAt("C:\\Docs\\notes.txt", scanner.FileMeta{Name: "notes.txt", Size: 20 * 1024 * 1024, ModTime: tenDaysAgo, Extension: ".txt"}))
 
 	// Query files idle > 30 days and > 50MB
 	summary := QueryIdleFilesStreaming(tm, 30, 50*1024*1024, "", "", "size_desc", 0, 10)

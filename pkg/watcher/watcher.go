@@ -405,7 +405,7 @@ func (fw *FSWatcher) removeFileFromTree(path string) (int64, bool) {
 		return size, true
 	}
 	if node := fw.opts.Tree.FindFile(path); node != nil {
-		return fw.opts.Tree.RemoveFile(node.Path)
+		return fw.opts.Tree.RemoveFile(node.Path())
 	}
 	return 0, false
 }
@@ -468,9 +468,7 @@ func (fw *FSWatcher) processFile(path string) {
 	modTime, createTime, accessTime := scanner.ExtractFileTimestamps(info)
 	allocated, compressed := scanner.GetAllocatedFileSize(path, info)
 
-	node := &scanner.FileNode{
-		Path:          path,
-		Name:          filepath.Base(path),
+	node := scanner.NewFileNodeAt(path, scanner.FileMeta{
 		Size:          info.Size(),
 		AllocatedSize: allocated,
 		ModTime:       modTime,
@@ -479,13 +477,13 @@ func (fw *FSWatcher) processFile(path string) {
 		Extension:     strings.ToLower(filepath.Ext(path)),
 		IsCompressed:  compressed,
 		IsSymlink:     info.Mode()&os.ModeSymlink != 0,
-	}
+	})
 
 	if fw.opts.HashFunc != nil {
 		// A locked file keeps an empty hash: it stays in the tree but leaves the
 		// duplicate index, instead of posing as a duplicate of its old content.
 		if hash, hashErr := fw.opts.HashFunc(path); hashErr == nil {
-			node.Hash = hash
+			node.SetHash(hash)
 		}
 	}
 

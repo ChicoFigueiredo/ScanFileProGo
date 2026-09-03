@@ -86,11 +86,11 @@ type ActionExecuteRequest struct {
 
 // ActionExecuteResult contains the final execution result.
 type ActionExecuteResult struct {
-	Success     bool     `json:"success"`
-	ActionType  string   `json:"actionType"`
-	Affected    int      `json:"affected"`
-	FreedBytes  int64    `json:"freedBytes"`
-	FreedSize   string   `json:"freedSize"`
-	Errors      []string `json:"errors,omitempty"`
-	Message     string   `json:"message"`
+	Success    bool     `json:"success"`
+	ActionType string   `json:"actionType"`
+	Affected   int      `json:"affected"`
+	FreedBytes int64    `json:"freedBytes"`
+	FreedSize  string   `json:"freedSize"`
+	Errors     []string `json:"errors,omitempty"`
+	Message    string   `json:"message"`
 }

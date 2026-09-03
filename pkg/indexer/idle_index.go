@@ -75,17 +75,17 @@ func QueryIdleFilesStreaming(tree *scanner.TreeManager, minAgeDays int, minSizeB
 			return true
 		}
 
-		if extLower != "" && !strings.EqualFold(f.Extension, extLower) {
+		if extLower != "" && !strings.EqualFold(f.Extension(), extLower) {
 			return true
 		}
 
-		if searchLower != "" && !strings.Contains(strings.ToLower(f.Path), searchLower) {
+		if searchLower != "" && !strings.Contains(strings.ToLower(f.Path()), searchLower) {
 			return true
 		}
 
-		lastInteraction := f.ModTime
-		if f.AccessTime > lastInteraction {
-			lastInteraction = f.AccessTime
+		lastInteraction := f.ModTime()
+		if f.AccessTime() > lastInteraction {
+			lastInteraction = f.AccessTime()
 		}
 
 		if lastInteraction <= 0 {
@@ -109,15 +109,15 @@ func QueryIdleFilesStreaming(tree *scanner.TreeManager, minAgeDays int, minSizeB
 
 		if daysInactive >= minAgeDays {
 			candidates = append(candidates, &IdleFileEntry{
-				Path:         f.Path,
-				Name:         f.Name,
+				Path:         f.Path(),
+				Name:         f.Name(),
 				Size:         f.Size,
-				ModTime:      f.ModTime,
-				CreateTime:   f.CreateTime,
-				AccessTime:   f.AccessTime,
+				ModTime:      f.ModTime(),
+				CreateTime:   f.CreateTime(),
+				AccessTime:   f.AccessTime(),
 				DaysInactive: daysInactive,
 				InactiveDays: daysInactive,
-				Extension:    f.Extension,
+				Extension:    f.Extension(),
 			})
 			totalBytes += f.Size
 		}

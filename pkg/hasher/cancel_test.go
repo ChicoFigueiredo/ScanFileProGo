@@ -24,7 +24,7 @@ func TestRunHashing_CancelReturnsFast(t *testing.T) {
 		if err := os.WriteFile(p, blob, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		files = append(files, &scanner.FileNode{Path: p, Name: filepath.Base(p), Size: fileSize})
+		files = append(files, scanner.NewFileNodeAt(p, scanner.FileMeta{Name: filepath.Base(p), Size: fileSize}))
 	}
 
 	h := NewHasher()
@@ -65,7 +65,7 @@ func TestRunHashing_AlreadyCancelledContext(t *testing.T) {
 	if err := os.WriteFile(p, []byte("conteudo"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f := &scanner.FileNode{Path: p, Name: "a.bin", Size: 8}
+	f := scanner.NewFileNodeAt(p, scanner.FileMeta{Name: "a.bin", Size: 8})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -97,7 +97,7 @@ func TestHasher_ConcurrentCancel(t *testing.T) {
 		if err := os.WriteFile(p, bytes.Repeat([]byte("c"), 200000), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		files = append(files, &scanner.FileNode{Path: p, Name: filepath.Base(p), Size: 200000})
+		files = append(files, scanner.NewFileNodeAt(p, scanner.FileMeta{Name: filepath.Base(p), Size: 200000}))
 	}
 
 	h := NewHasher()

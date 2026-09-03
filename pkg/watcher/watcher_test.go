@@ -165,7 +165,7 @@ func (h *harness) touch(rel, content string) string {
 func (h *harness) fileInTree(path string) *scanner.FileNode {
 	var found *scanner.FileNode
 	h.tree.IterateFiles(func(f *scanner.FileNode) bool {
-		if strings.EqualFold(f.Path, path) {
+		if strings.EqualFold(f.Path(), path) {
 			found = f
 			return false
 		}
@@ -250,7 +250,7 @@ func TestFSWatcher_CreateUpdateAndRemoveReachTreeAndIndex(t *testing.T) {
 	if node.Size != int64(len("conteudo original")) {
 		t.Fatalf("tamanho errado na árvore: %d", node.Size)
 	}
-	if node.Hash == "" {
+	if node.Hash() == "" {
 		t.Fatal("esperava hash calculado em segundo plano")
 	}
 	if ops := h.events.opsFor(created); len(ops) == 0 || ops[0] != "CREATE" {

@@ -250,13 +250,13 @@ func (h *Hasher) selectCandidates(allFiles []*scanner.FileNode, algo string, min
 	reuse := func(f *scanner.FileNode) bool {
 		// Quick Scan: o hash gravado só vale se foi calculado com o algoritmo
 		// atual (achado M14).
-		if scanner.HashMatchesAlgorithm(f.Hash, algo) {
+		if scanner.HashMatchesAlgorithm(f.Hash(), algo) {
 			h.hashedFiles.Add(1)
 			h.hashedBytes.Add(f.Size)
 			return true
 		}
 		// Hash de outro algoritmo: descarta para não contaminar os grupos.
-		f.Hash = ""
+		f.SetHash("")
 		return false
 	}
 
@@ -286,8 +286,8 @@ func (h *Hasher) selectCandidates(allFiles []*scanner.FileNode, algo string, min
 			// Sem par de tamanho: não é Candidato a Duplicado. Um hash antigo de
 			// outro algoritmo é descartado para não enganar o índice.
 			for _, f := range group {
-				if f.Hash != "" && !scanner.HashMatchesAlgorithm(f.Hash, algo) {
-					f.Hash = ""
+				if f.Hash() != "" && !scanner.HashMatchesAlgorithm(f.Hash(), algo) {
+					f.SetHash("")
 				}
 			}
 			continue
@@ -338,27 +338,27 @@ func (h *Hasher) runPrehashStage(ctx context.Context, files []*scanner.FileNode,
 					}
 					h.activeWorkers.Store(workerID, &scanner.ActiveWorker{
 						WorkerID:  workerID,
-						Path:      f.Path,
+						Path:      f.Path(),
 						TotalSize: f.Size,
 						Phase:     "prehash",
 					})
-					q, err := ComputeQuickHash(f.Path, f.Size)
+					q, err := ComputeQuickHash(f.Path(), f.Size)
 					h.activeWorkers.Delete(workerID)
 					if err != nil {
 						h.errorsCount.Add(1)
 						if diskLogger != nil {
-							diskLogger.Log("phase2_prehash", f.Path, fmt.Sprintf("Bloqueado ou sem permissão: %v", err))
+							diskLogger.Log("phase2_prehash", f.Path(), fmt.Sprintf("Bloqueado ou sem permissão: %v", err))
 						}
 						h.logFile(scanner.FileLogEntry{
 							Timestamp: time.Now(),
-							Path:      f.Path,
+							Path:      f.Path(),
 							Size:      f.Size,
 							Status:    "LOCKED",
 							Message:   fmt.Sprintf("Pré-hash falhou: %v", err),
 						})
 						continue
 					}
-					f.QuickHash = q
+					f.SetQuickHash(q)
 					h.bytesRead.Add(prehashBytesRead(f.Size))
 					h.prehashFiles.Add(1)
 				}
@@ -393,10 +393,10 @@ func (h *Hasher) regroupAfterPrehash(files []*scanner.FileNode) []*scanner.FileN
 	}
 	groups := make(map[key][]*scanner.FileNode, len(files))
 	for _, f := range files {
-		if f.QuickHash == 0 {
+		if f.QuickHash() == 0 {
 			continue // Pré-hash falhou: já contabilizado como erro
 		}
-		k := key{size: f.Size, quick: f.QuickHash}
+		k := key{size: f.Size, quick: f.QuickHash()}
 		groups[k] = append(groups[k], f)
 	}
 
@@ -536,7 +536,7 @@ func (h *Hasher) hashSingleFileWithProgress(ctx context.Context, workerID int, c
 		}
 		h.activeWorkers.Store(workerID, &scanner.ActiveWorker{
 			WorkerID:  workerID,
-			Path:      candidate.Node.Path,
+			Path:      candidate.Node.Path(),
 			TotalSize: candidate.Node.Size,
 			BytesDone: bytesDone,
 			Percent:   percent,
@@ -546,15 +546,15 @@ func (h *Hasher) hashSingleFileWithProgress(ctx context.Context, workerID int, c
 	publish(0)
 	defer h.activeWorkers.Delete(workerID)
 
-	file, err := os.Open(candidate.Node.Path)
+	file, err := os.Open(candidate.Node.Path())
 	if err != nil {
 		h.errorsCount.Add(1)
 		if diskLogger != nil {
-			diskLogger.Log("phase2_hash_open", candidate.Node.Path, fmt.Sprintf("Bloqueado ou sem permissão: %v", err))
+			diskLogger.Log("phase2_hash_open", candidate.Node.Path(), fmt.Sprintf("Bloqueado ou sem permissão: %v", err))
 		}
 		h.logFile(scanner.FileLogEntry{
 			Timestamp: time.Now(),
-			Path:      candidate.Node.Path,
+			Path:      candidate.Node.Path(),
 			Size:      candidate.Node.Size,
 			Status:    "LOCKED",
 			Message:   fmt.Sprintf("Bloqueado ou sem permissão: %v", err),
@@ -587,11 +587,11 @@ func (h *Hasher) hashSingleFileWithProgress(ctx context.Context, workerID int, c
 			}
 			h.errorsCount.Add(1)
 			if diskLogger != nil {
-				diskLogger.Log("phase2_hash_read", candidate.Node.Path, fmt.Sprintf("Erro de leitura I/O: %v", readErr))
+				diskLogger.Log("phase2_hash_read", candidate.Node.Path(), fmt.Sprintf("Erro de leitura I/O: %v", readErr))
 			}
 			h.logFile(scanner.FileLogEntry{
 				Timestamp: time.Now(),
-				Path:      candidate.Node.Path,
+				Path:      candidate.Node.Path(),
 				Size:      candidate.Node.Size,
 				Status:    "ERROR",
 				Message:   fmt.Sprintf("Erro de leitura I/O: %v", readErr),
@@ -601,13 +601,13 @@ func (h *Hasher) hashSingleFileWithProgress(ctx context.Context, workerID int, c
 	}
 
 	hashResult := FormatDigest(algo, digest)
-	candidate.Node.Hash = hashResult
+	candidate.Node.SetHash(hashResult)
 	h.hashedFiles.Add(1)
 
 	durationMs := time.Since(fileStart).Milliseconds()
 	h.logFile(scanner.FileLogEntry{
 		Timestamp:  time.Now(),
-		Path:       candidate.Node.Path,
+		Path:       candidate.Node.Path(),
 		Size:       candidate.Node.Size,
 		Hash:       hashResult,
 		DurationMs: durationMs,

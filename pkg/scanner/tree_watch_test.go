@@ -8,8 +8,8 @@ func TestTreeManager_ReplaceFile(t *testing.T) {
 	tm := NewTreeManager()
 	tm.GetOrCreateRoot("C:\\")
 
-	tm.AddFile(&FileNode{Path: "C:\\Folder1\\a.txt", Name: "a.txt", Size: 1000, ModTime: 10})
-	tm.AddFile(&FileNode{Path: "C:\\Folder1\\Sub\\b.txt", Name: "b.txt", Size: 500, ModTime: 20})
+	tm.AddFile(NewFileNodeAt("C:\\Folder1\\a.txt", FileMeta{Name: "a.txt", Size: 1000, ModTime: 10}))
+	tm.AddFile(NewFileNodeAt("C:\\Folder1\\Sub\\b.txt", FileMeta{Name: "b.txt", Size: 500, ModTime: 20}))
 
 	root := tm.FindDir("C:\\")
 	if root.TotalSize != 1500 || root.FileCount != 2 {
@@ -17,7 +17,7 @@ func TestTreeManager_ReplaceFile(t *testing.T) {
 	}
 
 	// Replacing an existing file must adjust sizes without changing the file count.
-	prev, replaced := tm.ReplaceFile(&FileNode{Path: "C:\\Folder1\\a.txt", Name: "a.txt", Size: 4000, ModTime: 99})
+	prev, replaced := tm.ReplaceFile(NewFileNodeAt("C:\\Folder1\\a.txt", FileMeta{Name: "a.txt", Size: 4000, ModTime: 99}))
 	if !replaced {
 		t.Fatal("esperava replaced=true para arquivo existente")
 	}
@@ -36,17 +36,17 @@ func TestTreeManager_ReplaceFile(t *testing.T) {
 	// The node stored in the tree must be the new one.
 	var found *FileNode
 	tm.IterateFiles(func(f *FileNode) bool {
-		if f.Path == "C:\\Folder1\\a.txt" {
+		if f.Path() == "C:\\Folder1\\a.txt" {
 			found = f
 		}
 		return true
 	})
-	if found == nil || found.ModTime != 99 || found.Size != 4000 {
+	if found == nil || found.ModTime() != 99 || found.Size != 4000 {
 		t.Fatalf("nó não foi substituído: %+v", found)
 	}
 
 	// Replacing an unknown path must add it.
-	prev, replaced = tm.ReplaceFile(&FileNode{Path: "C:\\Folder1\\Sub\\c.txt", Name: "c.txt", Size: 250})
+	prev, replaced = tm.ReplaceFile(NewFileNodeAt("C:\\Folder1\\Sub\\c.txt", FileMeta{Name: "c.txt", Size: 250}))
 	if replaced || prev != 0 {
 		t.Fatalf("esperava inserção (replaced=false, prev=0), obtive replaced=%v prev=%d", replaced, prev)
 	}
@@ -57,9 +57,9 @@ func TestTreeManager_ReplaceFile(t *testing.T) {
 
 func TestTreeManager_ReplaceFileIsCaseInsensitive(t *testing.T) {
 	tm := NewTreeManager()
-	tm.AddFile(&FileNode{Path: "C:\\Dir\\Foto.JPG", Name: "Foto.JPG", Size: 100})
+	tm.AddFile(NewFileNodeAt("C:\\Dir\\Foto.JPG", FileMeta{Name: "Foto.JPG", Size: 100}))
 
-	prev, replaced := tm.ReplaceFile(&FileNode{Path: "C:\\dir\\foto.jpg", Name: "foto.jpg", Size: 300})
+	prev, replaced := tm.ReplaceFile(NewFileNodeAt("C:\\dir\\foto.jpg", FileMeta{Name: "foto.jpg", Size: 300}))
 	if !replaced || prev != 100 {
 		t.Fatalf("esperava substituição case-insensitive, obtive replaced=%v prev=%d", replaced, prev)
 	}
@@ -71,7 +71,7 @@ func TestTreeManager_ReplaceFileIsCaseInsensitive(t *testing.T) {
 
 func TestTreeManager_FindFile(t *testing.T) {
 	tm := NewTreeManager()
-	tm.AddFile(&FileNode{Path: "C:\\Dir\\Sub\\Foto.JPG", Name: "Foto.JPG", Size: 42})
+	tm.AddFile(NewFileNodeAt("C:\\Dir\\Sub\\Foto.JPG", FileMeta{Name: "Foto.JPG", Size: 42}))
 
 	if got := tm.FindFile("C:\\Dir\\Sub\\Foto.JPG"); got == nil || got.Size != 42 {
 		t.Fatalf("esperava encontrar o arquivo exato, obtive %v", got)
@@ -92,10 +92,10 @@ func TestTreeManager_FindFile(t *testing.T) {
 
 func TestTreeManager_RemoveDir(t *testing.T) {
 	tm := NewTreeManager()
-	tm.AddFile(&FileNode{Path: "C:\\Keep\\keep.txt", Name: "keep.txt", Size: 7})
-	tm.AddFile(&FileNode{Path: "C:\\Parent\\Target\\a.bin", Name: "a.bin", Size: 100})
-	tm.AddFile(&FileNode{Path: "C:\\Parent\\Target\\deep\\b.bin", Name: "b.bin", Size: 300})
-	tm.AddFile(&FileNode{Path: "C:\\Parent\\other.bin", Name: "other.bin", Size: 11})
+	tm.AddFile(NewFileNodeAt("C:\\Keep\\keep.txt", FileMeta{Name: "keep.txt", Size: 7}))
+	tm.AddFile(NewFileNodeAt("C:\\Parent\\Target\\a.bin", FileMeta{Name: "a.bin", Size: 100}))
+	tm.AddFile(NewFileNodeAt("C:\\Parent\\Target\\deep\\b.bin", FileMeta{Name: "b.bin", Size: 300}))
+	tm.AddFile(NewFileNodeAt("C:\\Parent\\other.bin", FileMeta{Name: "other.bin", Size: 11}))
 
 	root := tm.FindDir("C:\\")
 	if root.TotalSize != 418 || root.FileCount != 4 {
@@ -146,8 +146,8 @@ func TestTreeManager_RemoveDir(t *testing.T) {
 
 func TestTreeManager_RemoveDirRoot(t *testing.T) {
 	tm := NewTreeManager()
-	tm.AddFile(&FileNode{Path: "C:\\a\\x.txt", Name: "x.txt", Size: 5})
-	tm.AddFile(&FileNode{Path: "D:\\b\\y.txt", Name: "y.txt", Size: 9})
+	tm.AddFile(NewFileNodeAt("C:\\a\\x.txt", FileMeta{Name: "x.txt", Size: 5}))
+	tm.AddFile(NewFileNodeAt("D:\\b\\y.txt", FileMeta{Name: "y.txt", Size: 9}))
 
 	bytes, files, ok := tm.RemoveDir("C:\\")
 	if !ok || bytes != 5 || files != 1 {

@@ -35,7 +35,7 @@ func TestFSWatcher_Windows_ReflectsRealChangesInNestedFolders(t *testing.T) {
 
 	waitFor(t, 5*time.Second, "criação em subpasta de 3 níveis chegar à árvore", func() bool {
 		n := h.fileInTree(created)
-		return n != nil && n.Hash != ""
+		return n != nil && n.Hash() != ""
 	})
 	if h.tree.FindDir(filepath.Join(h.dir, nested)) == nil {
 		t.Fatal("as três subpastas deveriam estar na árvore")

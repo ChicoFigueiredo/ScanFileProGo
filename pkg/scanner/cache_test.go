@@ -12,22 +12,8 @@ func TestCache_ExportImportRoundtrip(t *testing.T) {
 	tm := NewTreeManager()
 	tm.GetOrCreateRoot("C:\\")
 
-	f1 := &FileNode{
-		Path:      "C:\\folder1\\file1.txt",
-		Name:      "file1.txt",
-		Size:      1024,
-		ModTime:   1700000000,
-		Hash:      "xxh64:1234567890abcdef",
-		Extension: ".txt",
-	}
-	f2 := &FileNode{
-		Path:      "C:\\folder1\\subfolder\\file2.png",
-		Name:      "file2.png",
-		Size:      2048,
-		ModTime:   1700000001,
-		Hash:      "xxh64:abcdef1234567890",
-		Extension: ".png",
-	}
+	f1 := NewFileNodeAt("C:\\folder1\\file1.txt", FileMeta{Name: "file1.txt", Size: 1024, ModTime: 1700000000, Hash: "xxh64:1234567890abcdef", Extension: ".txt"})
+	f2 := NewFileNodeAt("C:\\folder1\\subfolder\\file2.png", FileMeta{Name: "file2.png", Size: 2048, ModTime: 1700000001, Hash: "xxh64:abcdef1234567890", Extension: ".png"})
 
 	tm.AddFile(f1)
 	tm.AddFile(f2)
@@ -77,14 +63,7 @@ func TestCache_FileSaveLoad(t *testing.T) {
 
 	tm := NewTreeManager()
 	tm.GetOrCreateRoot("D:\\")
-	tm.AddFile(&FileNode{
-		Path:      "D:\\data\\test.bin",
-		Name:      "test.bin",
-		Size:      5000,
-		ModTime:   1700000000,
-		Hash:      "xxh64:test",
-		Extension: ".bin",
-	})
+	tm.AddFile(NewFileNodeAt("D:\\data\\test.bin", FileMeta{Name: "test.bin", Size: 5000, ModTime: 1700000000, Hash: "xxh64:test", Extension: ".bin"}))
 
 	cachePath := filepath.Join(tempDir, "test_cache.scanfile.gz")
 	config := ScanConfig{Roots: []string{"D:\\"}}
@@ -117,14 +96,7 @@ func TestAutoSave_AtomicRotation(t *testing.T) {
 
 	tm := NewTreeManager()
 	tm.GetOrCreateRoot("C:\\")
-	tm.AddFile(&FileNode{
-		Path:      "C:\\data\\test1.txt",
-		Name:      "test1.txt",
-		Size:      1234,
-		ModTime:   1700000000,
-		Hash:      "xxh64:test1",
-		Extension: ".txt",
-	})
+	tm.AddFile(NewFileNodeAt("C:\\data\\test1.txt", FileMeta{Name: "test1.txt", Size: 1234, ModTime: 1700000000, Hash: "xxh64:test1", Extension: ".txt"}))
 
 	config := ScanConfig{Roots: []string{"C:\\"}}
 
@@ -146,14 +118,7 @@ func TestAutoSave_AtomicRotation(t *testing.T) {
 	}
 
 	// Add second file and AutoSave again (triggers backup rotation)
-	tm.AddFile(&FileNode{
-		Path:      "C:\\data\\test2.txt",
-		Name:      "test2.txt",
-		Size:      5678,
-		ModTime:   1700000002,
-		Hash:      "xxh64:test2",
-		Extension: ".txt",
-	})
+	tm.AddFile(NewFileNodeAt("C:\\data\\test2.txt", FileMeta{Name: "test2.txt", Size: 5678, ModTime: 1700000002, Hash: "xxh64:test2", Extension: ".txt"}))
 
 	path2, err := SaveAutoSave(tm, []string{"C:\\"}, config, tempDir)
 	if err != nil {
@@ -183,14 +148,7 @@ func TestQuickScan_LookupAndReuse(t *testing.T) {
 	snap := &CacheSnapshot{
 		Version: 2,
 		Files: []*FileNode{
-			{
-				Path:      "C:\\Project\\doc.pdf",
-				Name:      "doc.pdf",
-				Size:      50000,
-				ModTime:   1700000100,
-				Hash:      "xxh64:cached_hash_123",
-				QuickHash: 1234567,
-			},
+			NewFileNodeAt("C:\\Project\\doc.pdf", FileMeta{Name: "doc.pdf", Size: 50000, ModTime: 1700000100, Hash: "xxh64:cached_hash_123", QuickHash: 1234567}),
 		},
 	}
 
@@ -205,7 +163,7 @@ func TestQuickScan_LookupAndReuse(t *testing.T) {
 		t.Fatalf("expected to find normalized path in lookup")
 	}
 
-	if cached.Hash != "xxh64:cached_hash_123" {
-		t.Errorf("expected hash xxh64:cached_hash_123, got %s", cached.Hash)
+	if cached.Hash() != "xxh64:cached_hash_123" {
+		t.Errorf("expected hash xxh64:cached_hash_123, got %s", cached.Hash())
 	}
 }

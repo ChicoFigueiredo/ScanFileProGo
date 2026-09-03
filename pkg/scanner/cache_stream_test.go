@@ -14,11 +14,11 @@ import (
 func sampleTree() *TreeManager {
 	tm := NewTreeManager()
 	tm.GetOrCreateRoot(`C:\`)
-	tm.AddFile(&FileNode{Path: `C:\legacy\readme.txt`, Name: "readme.txt", Size: 500, AllocatedSize: 4096, ModTime: 1700000000, Hash: "xxh64:0000000000000001", QuickHash: 11, Extension: ".txt"})
-	tm.AddFile(&FileNode{Path: `C:\legacy\docs\manual.pdf`, Name: "manual.pdf", Size: 8000, AllocatedSize: 8192, ModTime: 1700000001, Hash: "xxh64:0000000000000002", QuickHash: 22, Extension: ".pdf"})
-	tm.AddFile(&FileNode{Path: `C:\legacy\docs\notas.txt`, Name: "notas.txt", Size: 12000, AllocatedSize: 12288, ModTime: 1700000002, Hash: "xxh64:0000000000000003", QuickHash: 33, Extension: ".txt"})
-	tm.AddFile(&FileNode{Path: `C:\legacy\media\video.mp4`, Name: "video.mp4", Size: 40000, AllocatedSize: 40960, ModTime: 1700000003, Hash: "xxh64:0000000000000004", QuickHash: 44, Extension: ".mp4"})
-	tm.AddFile(&FileNode{Path: `C:\legacy\media\capa.png`, Name: "capa.png", Size: 8000, AllocatedSize: 8192, ModTime: 1700000004, Hash: "xxh64:0000000000000005", QuickHash: 55, Extension: ".png"})
+	tm.AddFile(NewFileNodeAt(`C:\legacy\readme.txt`, FileMeta{Name: "readme.txt", Size: 500, AllocatedSize: 4096, ModTime: 1700000000, Hash: "xxh64:0000000000000001", QuickHash: 11, Extension: ".txt"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\docs\manual.pdf`, FileMeta{Name: "manual.pdf", Size: 8000, AllocatedSize: 8192, ModTime: 1700000001, Hash: "xxh64:0000000000000002", QuickHash: 22, Extension: ".pdf"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\docs\notas.txt`, FileMeta{Name: "notas.txt", Size: 12000, AllocatedSize: 12288, ModTime: 1700000002, Hash: "xxh64:0000000000000003", QuickHash: 33, Extension: ".txt"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\media\video.mp4`, FileMeta{Name: "video.mp4", Size: 40000, AllocatedSize: 40960, ModTime: 1700000003, Hash: "xxh64:0000000000000004", QuickHash: 44, Extension: ".mp4"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\media\capa.png`, FileMeta{Name: "capa.png", Size: 8000, AllocatedSize: 8192, ModTime: 1700000004, Hash: "xxh64:0000000000000005", QuickHash: 55, Extension: ".png"}))
 	tm.ComputeAggregatedSizes()
 	return tm
 }
@@ -116,11 +116,11 @@ func TestCache_StreamingRoundtrip(t *testing.T) {
 		t.Errorf("raiz agregada errada: %d arquivos, %d bytes", root.FileCount, root.TotalSize)
 	}
 	for _, f := range files {
-		if f.Hash == "" {
-			t.Errorf("%s perdeu o hash no roundtrip", f.Path)
+		if f.Hash() == "" {
+			t.Errorf("%s perdeu o hash no roundtrip", f.Path())
 		}
-		if f.QuickHash == 0 {
-			t.Errorf("%s perdeu o Pré-hash no roundtrip", f.Path)
+		if f.QuickHash() == 0 {
+			t.Errorf("%s perdeu o Pré-hash no roundtrip", f.Path())
 		}
 	}
 }
@@ -254,8 +254,8 @@ func TestBuildQuickScanLookupFromTree(t *testing.T) {
 	if !ok || f == nil {
 		t.Fatalf("chave normalizada %q não encontrada", key)
 	}
-	if f.Hash != "xxh64:0000000000000003" {
-		t.Errorf("hash = %q", f.Hash)
+	if f.Hash() != "xxh64:0000000000000003" {
+		t.Errorf("hash = %q", f.Hash())
 	}
 
 	if got := BuildQuickScanLookupFromTree(nil); len(got) != 0 {
@@ -288,5 +288,95 @@ func TestSaveAndLoadCacheSummary(t *testing.T) {
 	}
 	if len(tm.GetAllFiles()) != 5 {
 		t.Error("árvore reconstruída incompleta")
+	}
+}
+
+// legacyTree reconstrói exatamente a árvore que gerou
+// testdata/legacy_v2.scanfile.gz (veja testdata/gen/main.go).
+func legacyTree() *TreeManager {
+	tm := NewTreeManager()
+	tm.GetOrCreateRoot(`C:\`)
+	tm.AddFile(NewFileNodeAt(`C:\legacy\readme.txt`, FileMeta{Name: "readme.txt", Size: 500, AllocatedSize: 4096, ModTime: 1700000000, CreateTime: 1699000000, AccessTime: 1700000500, Hash: "xxh64:0000000000000001", QuickHash: 11, Extension: ".txt"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\docs\manual.pdf`, FileMeta{Name: "manual.pdf", Size: 8000, AllocatedSize: 8192, ModTime: 1700000001, CreateTime: 1699000001, AccessTime: 1700000501, Hash: "xxh64:0000000000000002", QuickHash: 22, Extension: ".pdf"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\docs\notas.txt`, FileMeta{Name: "notas.txt", Size: 12000, AllocatedSize: 12288, ModTime: 1700000002, CreateTime: 1699000002, AccessTime: 1700000502, Hash: "xxh64:0000000000000003", QuickHash: 33, Extension: ".txt"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\media\video.mp4`, FileMeta{Name: "video.mp4", Size: 40000, AllocatedSize: 40960, ModTime: 1700000003, CreateTime: 1699000003, AccessTime: 1700000503, Hash: "xxh64:0000000000000004", QuickHash: 44, Extension: ".mp4"}))
+	tm.AddFile(NewFileNodeAt(`C:\legacy\media\capa.png`, FileMeta{Name: "capa.png", Size: 8000, AllocatedSize: 8192, ModTime: 1700000004, CreateTime: 1699000004, AccessTime: 1700000504, Hash: "xxh64:0000000000000005", QuickHash: 55, Extension: ".png"}))
+	tm.ComputeAggregatedSizes()
+	return tm
+}
+
+// O nó compacto do ADR-0001 não pode mudar um byte do que vai para o disco:
+// este teste compara o array `files` exportado hoje com o do fixture gerado
+// pelo exportador ANTERIOR, arquivo por arquivo.
+func TestExportCache_FilesArrayIgualAoFixtureLegado(t *testing.T) {
+	fixture, err := os.Open(filepath.Join("testdata", "legacy_v2.scanfile.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fixture.Close()
+	gz, err := gzip.NewReader(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legado struct {
+		Files       []json.RawMessage `json:"files"`
+		Directories []string          `json:"directories"`
+	}
+	if err := json.NewDecoder(gz).Decode(&legado); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cfg := ScanConfig{Roots: []string{`C:\`}, WorkerThreads: 8, HashAlgorithm: "xxhash", MinSizeForHash: 1}
+	if err := ExportCache(legacyTree(), []string{`C:\`}, cfg, &buf); err != nil {
+		t.Fatal(err)
+	}
+	novoGz, err := gzip.NewReader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var novo struct {
+		Files       []json.RawMessage `json:"files"`
+		Directories []string          `json:"directories"`
+	}
+	if err := json.NewDecoder(novoGz).Decode(&novo); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(novo.Files) != len(legado.Files) {
+		t.Fatalf("exportou %d arquivos, o fixture tem %d", len(novo.Files), len(legado.Files))
+	}
+
+	// A ordem de percurso depende do mapa de filhos: compara por caminho.
+	porCaminho := func(list []json.RawMessage) map[string]string {
+		out := make(map[string]string, len(list))
+		for _, raw := range list {
+			var v struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(raw, &v); err != nil {
+				t.Fatal(err)
+			}
+			out[v.Path] = string(raw)
+		}
+		return out
+	}
+	esperado := porCaminho(legado.Files)
+	obtido := porCaminho(novo.Files)
+	for path, want := range esperado {
+		got, ok := obtido[path]
+		if !ok {
+			t.Errorf("%s sumiu do snapshot exportado", path)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s mudou de bytes no snapshot.\nobtido:   %s\nesperado: %s", path, got, want)
+		}
+	}
+
+	sort.Strings(legado.Directories)
+	sort.Strings(novo.Directories)
+	if strings.Join(novo.Directories, "|") != strings.Join(legado.Directories, "|") {
+		t.Errorf("lista de pastas mudou: %v, esperado %v", novo.Directories, legado.Directories)
 	}
 }
