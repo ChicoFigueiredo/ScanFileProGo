@@ -34,11 +34,28 @@ const (
 // Não construa a struct diretamente: use NewFileNode ou NewFileNodeAt. Os
 // campos exportados Size e AllocatedSize continuam sendo lidos e escritos
 // livremente; o resto passa por acessores.
+//
+// Concorrência. O dígito é o único campo que muda depois que o nó entra na
+// árvore: os workers da Fase 2 gravam Hash Completo e Pré-hash enquanto o
+// Autosave periódico do contrato 1.7 e os handlers /api/tree e /api/duplicates
+// leem os mesmos nós. Por isso ele é publicado por troca de ponteiro atômica e
+// o fileDigest é imutável depois de publicado — escrever monta um novo e o
+// troca, ler carrega o ponteiro uma vez e trabalha em cima dele.
+//
+// Os demais campos (name, parent, flags, extra, extID, tempos, Size,
+// AllocatedSize) só são escritos ANTES do nó ser pendurado na árvore, sempre
+// sob o lock da pasta (FastSetDir, AddFileAt, ReplaceFileAt, treeInserter);
+// quem lê pega a lista de arquivos sob o mesmo lock, então há ordem de
+// acontecimentos e eles não precisam de átomo. Ao acrescentar uma escrita
+// tardia num desses campos, traga-a para este mesmo esquema.
+//
+// FileNode não pode ser copiado por valor depois de publicado: a cópia leria o
+// ponteiro atômico sem átomo. Use sempre *FileNode.
 type FileNode struct {
-	parent *DirNode    // pasta que contém o arquivo (nil enquanto solto)
-	name   string      // nome do arquivo, sem caminho
-	digest *fileDigest // Hash Completo e Pré-hash (nil enquanto não houver)
-	extra  *fileExtra  // campos raros (nil no caso comum)
+	parent *DirNode                   // pasta que contém o arquivo (nil enquanto solto)
+	name   string                     // nome do arquivo, sem caminho
+	digest atomic.Pointer[fileDigest] // Hash Completo e Pré-hash (nil enquanto não houver)
+	extra  *fileExtra                 // campos raros (nil no caso comum)
 
 	// Size é o Tamanho Lógico em bytes.
 	Size int64
@@ -54,6 +71,10 @@ type FileNode struct {
 
 // fileDigest guarda o Hash Completo em bytes fixos mais o Pré-hash. Só é
 // alocado para os arquivos que passaram pela Fase 2.
+//
+// IMUTÁVEL depois de publicado em FileNode.digest: nenhum campo pode ser
+// escrito num fileDigest que já foi para o ponteiro atômico. Quem muda o hash
+// monta outro (ver newDigest, SetHash e SetQuickHash).
 type fileDigest struct {
 	quick uint64   // Pré-hash (0 = ausente)
 	sum   [32]byte // bytes do Hash Completo
@@ -100,8 +121,11 @@ func NewFileNode(meta FileMeta) *FileNode {
 	f.SetCreateTime(meta.CreateTime)
 	f.SetAccessTime(meta.AccessTime)
 	f.SetExtension(meta.Extension)
-	f.SetHash(meta.Hash)
-	f.SetQuickHash(meta.QuickHash)
+	// O nó ainda é privado desta goroutine: o dígito sai pronto numa alocação
+	// só, sem passar pelo laço de troca de SetHash/SetQuickHash.
+	if d := newDigest(meta.Hash, meta.QuickHash); d != nil {
+		f.digest.Store(d)
+	}
 	f.setFlag(flagSymlink, meta.IsSymlink)
 	if meta.LinkTarget != "" {
 		f.ensureExtra().linkTarget = meta.LinkTarget
@@ -249,61 +273,110 @@ func timeDelta(t, base int64) (int32, bool) {
 
 // Hash devolve o Hash Completo como string com prefixo (ex.: "xxh64:ab...").
 // Vazio quando o arquivo ainda não passou pela Fase 2.
+//
+// A leitura carrega o ponteiro do dígito uma vez; o que ele aponta não muda
+// mais, então o resultado é sempre um hash inteiro, nunca a mistura de dois.
 func (f *FileNode) Hash() string {
-	if f == nil || f.digest == nil {
+	if f == nil {
 		return ""
 	}
-	return f.digest.String()
+	return f.digest.Load().String() // String() trata o nil
 }
 
 // SetHash grava o Hash Completo. Strings no formato "<prefixo>:<hex>" viram
 // bytes fixos; qualquer outro formato é guardado literalmente, para que o
 // round-trip do Snapshot continue exato.
+//
+// A gravação monta um dígito novo e o troca por comparação: o laço cobre o
+// caso de Pré-hash e Hash Completo do mesmo arquivo saírem de goroutines
+// diferentes, e quem estiver lendo o dígito antigo continua com ele inteiro.
 func (f *FileNode) SetHash(hash string) {
-	if hash == "" {
-		if f.digest != nil {
-			f.digest.algo = 0
-			f.digest.n = 0
-			f.digest.raw = ""
-			if f.digest.quick == 0 {
-				f.digest = nil
+	for {
+		old := f.digest.Load()
+		if hash == "" {
+			if old == nil || (old.algo == 0 && old.raw == "") {
+				return // já não havia Hash Completo
 			}
+			var next *fileDigest
+			if old.quick != 0 {
+				next = &fileDigest{quick: old.quick}
+			}
+			if f.digest.CompareAndSwap(old, next) {
+				return
+			}
+			continue
 		}
-		return
+		next := &fileDigest{}
+		if old != nil {
+			next.quick = old.quick
+		}
+		if algo, sum, ok := decodeHash(hash); ok {
+			next.algo = algo
+			next.n = uint8(len(sum))
+			copy(next.sum[:], sum)
+		} else {
+			next.raw = hash
+		}
+		if f.digest.CompareAndSwap(old, next) {
+			return
+		}
 	}
-	d := f.ensureDigest()
-	d.raw = ""
-	d.algo = 0
-	d.n = 0
-	if algo, sum, ok := decodeHash(hash); ok {
-		d.algo = algo
-		d.n = uint8(len(sum))
-		copy(d.sum[:], sum)
-		return
-	}
-	d.raw = hash
 }
 
 // QuickHash devolve o Pré-hash (0 = ausente).
 func (f *FileNode) QuickHash() uint64 {
-	if f == nil || f.digest == nil {
+	if f == nil {
 		return 0
 	}
-	return f.digest.quick
+	return f.digest.Load().quickHash()
 }
 
-// SetQuickHash grava o Pré-hash.
+// SetQuickHash grava o Pré-hash, também por troca de ponteiro.
 func (f *FileNode) SetQuickHash(q uint64) {
-	if q == 0 {
-		if f.digest != nil {
-			f.digest.quick = 0
-			if f.digest.algo == 0 && f.digest.raw == "" {
-				f.digest = nil
+	for {
+		old := f.digest.Load()
+		if old == nil {
+			if q == 0 {
+				return
 			}
+			if f.digest.CompareAndSwap(nil, &fileDigest{quick: q}) {
+				return
+			}
+			continue
 		}
-		return
+		if old.quick == q {
+			return
+		}
+		var next *fileDigest
+		if q != 0 || old.algo != 0 || old.raw != "" {
+			cp := *old
+			cp.quick = q
+			next = &cp
+		}
+		if f.digest.CompareAndSwap(old, next) {
+			return
+		}
 	}
-	f.ensureDigest().quick = q
+}
+
+// newDigest monta o dígito completo de uma vez. Devolve nil quando não há nem
+// Hash Completo nem Pré-hash — o caso da esmagadora maioria dos arquivos, que
+// assim não paga alocação nenhuma (ADR-0001).
+func newDigest(hash string, quick uint64) *fileDigest {
+	if hash == "" && quick == 0 {
+		return nil
+	}
+	d := &fileDigest{quick: quick}
+	if hash != "" {
+		if algo, sum, ok := decodeHash(hash); ok {
+			d.algo = algo
+			d.n = uint8(len(sum))
+			copy(d.sum[:], sum)
+		} else {
+			d.raw = hash
+		}
+	}
+	return d
 }
 
 // IsSymlink informa se o arquivo é um link simbólico ou uma junção.
@@ -352,15 +425,12 @@ func (f *FileNode) ensureExtra() *fileExtra {
 	return f.extra
 }
 
-func (f *FileNode) ensureDigest() *fileDigest {
-	if f.digest == nil {
-		f.digest = &fileDigest{}
-	}
-	return f.digest
-}
-
 // Meta devolve os dados do arquivo na forma plana, com o caminho já derivado.
+//
+// O dígito é carregado uma vez só: Hash e QuickHash saem sempre do mesmo
+// retrato, nunca de dois momentos diferentes da Fase 2.
 func (f *FileNode) Meta() FileMeta {
+	d := f.digest.Load()
 	return FileMeta{
 		Name:              f.name,
 		Size:              f.Size,
@@ -368,8 +438,8 @@ func (f *FileNode) Meta() FileMeta {
 		ModTime:           f.ModTime(),
 		CreateTime:        f.CreateTime(),
 		AccessTime:        f.AccessTime(),
-		Hash:              f.Hash(),
-		QuickHash:         f.QuickHash(),
+		Hash:              d.String(),
+		QuickHash:         d.quickHash(),
 		Extension:         f.Extension(),
 		IsSymlink:         f.IsSymlink(),
 		LinkTarget:        f.LinkTarget(),
@@ -425,9 +495,16 @@ func (f *FileNode) jsonView(dirPath string) fileNodeJSON {
 	}
 }
 
-// MarshalJSON reproduz byte a byte o JSON do FileNode original. O receptor é
-// por valor de propósito: assim uma cópia do nó também serializa direito.
-func (f FileNode) MarshalJSON() ([]byte, error) {
+// MarshalJSON reproduz byte a byte o JSON do FileNode original.
+//
+// O receptor passou a ser ponteiro junto com a publicação atômica do dígito: um
+// receptor por valor copiaria o nó inteiro sem átomo — exatamente a leitura
+// rasgada que a Fase 2 provoca. Todos os pontos que serializam nó usam
+// *FileNode (CacheSnapshot.Files, o exportador em streaming e a API HTTP).
+func (f *FileNode) MarshalJSON() ([]byte, error) {
+	if f == nil {
+		return []byte("null"), nil
+	}
 	return json.Marshal(f.jsonView(""))
 }
 
@@ -438,8 +515,24 @@ func (f *FileNode) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*f = *fileNodeFromJSON(raw)
+	f.adopt(fileNodeFromJSON(raw))
 	return nil
+}
+
+// adopt copia o conteúdo de src campo a campo. Existe porque `*f = *src`
+// copiaria o ponteiro atômico do dígito, o que a corrida da Fase 2 proíbe.
+func (f *FileNode) adopt(src *FileNode) {
+	f.parent = src.parent
+	f.name = src.name
+	f.digest.Store(src.digest.Load())
+	f.extra = src.extra
+	f.Size = src.Size
+	f.AllocatedSize = src.AllocatedSize
+	f.modTime = src.modTime
+	f.createDelta = src.createDelta
+	f.accessDelta = src.accessDelta
+	f.extID = src.extID
+	f.flags = src.flags
 }
 
 // fileNodeFromJSON monta o nó a partir da visão serializável.
@@ -511,6 +604,14 @@ func decodeHash(hash string) (algo uint8, sum []byte, ok bool) {
 		return 0, nil, false
 	}
 	return code, buf, true
+}
+
+// quickHash devolve o Pré-hash de um dígito que pode ser nil.
+func (d *fileDigest) quickHash() uint64 {
+	if d == nil {
+		return 0
+	}
+	return d.quick
 }
 
 // String reconstrói a string com prefixo gravada no Snapshot e devolvida pela API.

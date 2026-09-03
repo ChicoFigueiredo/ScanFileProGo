@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +24,43 @@ const (
 
 	// BackupAutoSaveFileName is the rollback autosave filename.
 	BackupAutoSaveFileName = "autosave_previous.sfz"
+
+	// autoSaveNamePrefix é o prefixo comum de todo arquivo de autosave; junto
+	// com autoSaveTempExt ele forma o nome do temporário de cada gravação. Esse
+	// nome é exclusivo por gravação (PID mais um contador atômico) porque duas
+	// gravações simultâneas escrevendo num temporário de nome fixo se truncam.
+	// A extensão NÃO é .sfz de propósito: um temporário órfão de uma queda não
+	// pode aparecer como Snapshot na lista do usuário.
+	autoSaveNamePrefix = "autosave_"
+	autoSaveTempExt    = ".tmp"
+
+	// legacyAutoSaveTempName é o temporário fixo usado até esta correção. Ele
+	// continua sendo filtrado da listagem para que um órfão deixado por uma
+	// versão anterior não seja oferecido ao usuário.
+	legacyAutoSaveTempName = "autosave_temp.sfz"
 )
+
+// autoSaveTempSeq numera os temporários de autosave dentro do processo.
+var autoSaveTempSeq atomic.Uint64
+
+// autoSaveRotateMu serializa apenas a rotação de nomes do autosave (latest ->
+// previous -> temporário). A gravação do temporário, que é a parte cara, fica
+// de fora.
+var autoSaveRotateMu sync.Mutex
+
+// autoSaveTempName monta um nome de temporário exclusivo desta gravação.
+func autoSaveTempName() string {
+	return fmt.Sprintf("%s%d_%d%s", autoSaveNamePrefix, os.Getpid(), autoSaveTempSeq.Add(1), autoSaveTempExt)
+}
+
+// isAutoSaveTempName informa se o nome é um arquivo de trabalho do autosave e
+// não um Snapshot para o usuário.
+func isAutoSaveTempName(name string) bool {
+	if name == legacyAutoSaveTempName {
+		return true
+	}
+	return strings.HasPrefix(name, autoSaveNamePrefix) && strings.HasSuffix(name, autoSaveTempExt)
+}
 
 // CacheSnapshot representa o cabeçalho do snapshot em disco.
 //
@@ -325,7 +363,9 @@ func SaveAutoSave(tm *TreeManager, roots []string, config ScanConfig, targetDir 
 		return "", fmt.Errorf("falha ao criar pasta de autosave: %w", err)
 	}
 
-	tempPath := filepath.Join(targetDir, "autosave_temp.sfz")
+	// O temporário é exclusivo desta gravação: duas gravações simultâneas num
+	// nome fixo se truncam e produzem um gzip cortado no autosave ativo.
+	tempPath := filepath.Join(targetDir, autoSaveTempName())
 	latestPath := filepath.Join(targetDir, DefaultAutoSaveFileName)
 	backupPath := filepath.Join(targetDir, BackupAutoSaveFileName)
 
@@ -342,6 +382,13 @@ func SaveAutoSave(tm *TreeManager, roots []string, config ScanConfig, targetDir 
 	}
 	file.Close()
 
+	// A rotação é serializada: só a troca de nomes, que é rápida, fica sob o
+	// lock — a serialização vale para o processo inteiro, e a gravação (que é o
+	// que demora) continua em paralelo. Sem isso duas gravações simultâneas
+	// podem rotacionar duas vezes e derrubar o backup bom.
+	autoSaveRotateMu.Lock()
+	defer autoSaveRotateMu.Unlock()
+
 	// Step 2: Rotate latest to backup if latest exists
 	if _, err := os.Stat(latestPath); err == nil {
 		_ = os.Remove(backupPath) // Remove old backup if any
@@ -356,6 +403,7 @@ func SaveAutoSave(tm *TreeManager, roots []string, config ScanConfig, targetDir 
 			_ = os.WriteFile(latestPath, data, 0644)
 			_ = os.Remove(tempPath)
 		} else {
+			_ = os.Remove(tempPath)
 			return "", fmt.Errorf("falha ao finalizar autosave atômico: %w", err)
 		}
 	}
@@ -764,6 +812,11 @@ func ListSavedCaches(dirPath string) ([]CacheFileInfo, error) {
 			continue
 		}
 		name := entry.Name()
+		// Um temporário de autosave — o da forma nova ou um órfão herdado da
+		// forma antiga — não é um Snapshot e não pode ser oferecido ao usuário.
+		if isAutoSaveTempName(name) {
+			continue
+		}
 		if strings.HasSuffix(name, ".sfz") || strings.HasSuffix(name, ".scanfile.gz") || strings.HasSuffix(name, ".scanfile") || strings.HasSuffix(name, ".json.gz") || strings.HasSuffix(name, ".json") {
 			info, err := entry.Info()
 			if err != nil {
@@ -775,7 +828,7 @@ func ListSavedCaches(dirPath string) ([]CacheFileInfo, error) {
 				FilePath:   fullPath,
 				SizeBytes:  info.Size(),
 				ModTime:    info.ModTime(),
-				IsAutoSave: strings.HasPrefix(name, "autosave_"),
+				IsAutoSave: strings.HasPrefix(name, autoSaveNamePrefix),
 			})
 		}
 	}
