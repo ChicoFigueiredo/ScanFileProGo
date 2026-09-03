@@ -83,3 +83,15 @@ Integração (S2 salvo indicação):
 9. `ScanConfig.LogDir` padrão "logs".
 10. `DirSummary.DirectFileCount` = arquivos diretos reais (fileCount continua recursivo).
 11. Corrida `FileNode.Hash` (H7) fica para a etapa 3 (ADR-0001).
+
+## Agente S1 (auth.go, static.go, handlers_files.go, handlers_ai.go) — commit 8d1b896
+
+Entregue: token de sessão com `X-ScanFile-Token` (query só em `/api/events` e `/api/ui/closed`), `Origin` estranho → 403, zero CORS, `/api/instance` isento; injeção do token no `index.html`; recycle/delete com escopo, `confirmName`, `confirmText`, resposta `items[]`; config via `MergeJSON`/`Public()`; `/api/system/info`; `/api/ai/models` como array; `execute` exige `confirm:true`.
+Novos identificadores: `server.Version` (var), `server.SessionTokenHeader`, `(*AppServer).SetSessionToken(string)`, `(*AppServer).token()`.
+
+### Pendências abertas (passagem final de integração)
+1. `activeRoots` sem mutex: escrito por `handlers_scan.go`/`handlers_cache.go` e lido pelos handlers de arquivos. S1 fez cópia defensiva (`scanRoots()`), mas o `RWMutex` em `server.go` é de S2.
+2. `NewAppServer` ainda passa `cfg.AIOpenRouterKey` (sempre vazio) ao `NewAgentCoordinator`; trocar por `config.OpenRouterKey(cfg)`.
+3. `findFileInTree` em `server.go` ficou sem uso.
+4. `main.go` (S3) deve fazer `server.Version = Version`; filho do handoff usa `SetSessionToken`; o modo `--mcp` não constrói `Handler()`, então precisa injetar a própria `RecycleFunc` com escopo, senão o Assistente cai no padrão sem escopo.
+5. Token guardado por mutex de pacote em `auth.go` (não `sync.Once`), porque `server.go` é de S2.
