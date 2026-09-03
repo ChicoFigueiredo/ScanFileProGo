@@ -20,10 +20,8 @@ func (s *AppServer) Handler() http.Handler {
 	s.registerFileRoutes(mux)
 	s.registerLifecycleRoutes(mux)
 
-	// Static UI assets
-	if s.uiFS != nil {
-		mux.Handle("/", http.FileServer(http.FS(s.uiFS)))
-	}
+	// Static UI assets (uiHandler vive em static.go, propriedade do Agente S1)
+	mux.Handle("/", s.uiHandler())
 
 	return s.authMiddleware(s.debugMiddleware(mux))
 }
