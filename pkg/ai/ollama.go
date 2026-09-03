@@ -54,8 +54,14 @@ type OllamaVersionResponse struct {
 	Version string `json:"version"`
 }
 
-// ListInstalledModels returns the list of installed model names and the Ollama version.
-func (c *OllamaClient) ListInstalledModels(ctx context.Context) ([]string, string, error) {
+// InstalledModel is a model already downloaded in the local Ollama installation.
+type InstalledModel struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"sizeBytes"`
+}
+
+// ListModels returns the installed models with their sizes plus the Ollama version.
+func (c *OllamaClient) ListModels(ctx context.Context) ([]InstalledModel, string, error) {
 	ctxShort, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -79,13 +85,16 @@ func (c *OllamaClient) ListInstalledModels(ctx context.Context) ([]string, strin
 		return nil, "", err
 	}
 
-	var list []string
+	list := make([]InstalledModel, 0, len(tags.Models))
 	for _, m := range tags.Models {
 		name := m.Name
 		if name == "" {
 			name = m.Model
 		}
-		list = append(list, name)
+		if name == "" {
+			continue
+		}
+		list = append(list, InstalledModel{Name: name, SizeBytes: m.Size})
 	}
 
 	// Fetch version
@@ -97,6 +106,20 @@ func (c *OllamaClient) ListInstalledModels(ctx context.Context) ([]string, strin
 	}
 
 	return list, verResp.Version, nil
+}
+
+// ListInstalledModels returns the list of installed model names and the Ollama version.
+func (c *OllamaClient) ListInstalledModels(ctx context.Context) ([]string, string, error) {
+	models, version, err := c.ListModels(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name)
+	}
+	return names, version, nil
 }
 
 // PullProgress represents progress chunks during model download.

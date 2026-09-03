@@ -1,14 +1,5 @@
 package ai
 
-// ProviderType represents the type of LLM integration.
-type ProviderType string
-
-const (
-	ProviderOllama      ProviderType = "ollama"
-	ProviderOpenRouter  ProviderType = "openrouter"
-	ProviderDirectLocal ProviderType = "direct"
-)
-
 // Message represents a single chat turn in the conversation.
 type Message struct {
 	Role       string     `json:"role"` // "system", "user", "assistant", "tool"
@@ -47,27 +38,30 @@ type FunctionDefinition struct {
 
 // ChatRequest represents the payload sent to the agent/chat endpoint.
 type ChatRequest struct {
-	Provider       ProviderType `json:"provider"`                 // "ollama", "openrouter", "direct"
-	Model          string       `json:"model"`                    // e.g. "qwen2.5:1.5b", "claude-3.7-sonnet"
+	Provider       ProviderType `json:"provider"`                 // "ollama", "openrouter" or "quick" ("direct" is a legacy alias)
+	Model          string       `json:"model"`                    // e.g. "qwen3-vl:8b"
 	Prompt         string       `json:"prompt"`                   // User input
 	History        []Message    `json:"history"`                  // Conversation turns
 	SelectedFolder string       `json:"selectedFolder,omitempty"` // Target root/folder context
-	DryRunDefault  bool         `json:"dryRunDefault"`            // Default dry-run mode for proposals
+	DryRunDefault  bool         `json:"dryRunDefault"`            // Deprecated: a Proposta is always pending
 }
 
-// ActionProposal represents a structured proposal formulated by the AI for user approval.
+// ActionProposal is the Proposta as the interface sees it: always pending until the
+// user approves it explicitly.
 type ActionProposal struct {
 	ProposalID  string   `json:"proposalId"`  // Unique ID for approval execution
-	ActionType  string   `json:"actionType"`  // "RECYCLE", "MOVE", "TAG", "DELETE", "MARK_REVIEW"
+	ActionType  string   `json:"actionType"`  // "RECYCLE", "MOVE", "TAG", "MARK_REVIEW"
 	Description string   `json:"description"` // Human-readable summary of what will happen
 	Files       []string `json:"files"`       // List of targeted absolute filepaths
 	FileCount   int      `json:"fileCount"`
 	TotalBytes  int64    `json:"totalBytes"`
 	TotalSize   string   `json:"totalSize"`
-	Category    string   `json:"category,omitempty"` // Tag or classification applied
-	DryRun      bool     `json:"dryRun"`
+	Destination string   `json:"destination,omitempty"` // Target folder for MOVE
+	Category    string   `json:"category,omitempty"`    // Tag or classification applied
+	DryRun      bool     `json:"dryRun"`                // Always true while pending
 	Executed    bool     `json:"executed"`
 	CreatedAt   string   `json:"createdAt"`
+	ExpiresAt   string   `json:"expiresAt,omitempty"`
 }
 
 // StreamEvent is sent over Server-Sent Events (SSE) or WebSocket to the UI during chat.
@@ -79,11 +73,15 @@ type StreamEvent struct {
 	Proposal *ActionProposal `json:"proposal,omitempty"`
 }
 
-// ActionExecuteRequest is sent when the user clicks to approve and execute a proposal.
+// ActionExecuteRequest is sent when the user approves a Proposta in the interface.
+// Confirm must be true: without it the server answers 400 and nothing is executed.
 type ActionExecuteRequest struct {
 	ProposalID string `json:"proposalId"`
-	ActionType string `json:"actionType"`
-	Files      []string `json:"files"`
+	Confirm    bool   `json:"confirm"`
+	// Deprecated: the action and the files come from the stored Proposta, never
+	// from the request body.
+	ActionType string   `json:"actionType,omitempty"`
+	Files      []string `json:"files,omitempty"`
 }
 
 // ActionExecuteResult contains the final execution result.

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ledongthuc/pdf"
@@ -27,6 +28,13 @@ import (
 	"scanfile/pkg/scanner"
 )
 
+// ProposalTTL is how long a pending Proposta stays executable before expiring.
+const ProposalTTL = 30 * time.Minute
+
+// RecycleFunc sends the given paths to the Windows Recycle Bin. It is injectable so
+// that tests never touch the real Recycle Bin.
+type RecycleFunc func(paths []string) recycle.BatchDeleteResult
+
 // MCPToolsContext holds references to ScanFile core engines and optional VL client.
 type MCPToolsContext struct {
 	Tree         *scanner.TreeManager
@@ -34,11 +42,23 @@ type MCPToolsContext struct {
 	FolderIndex  *indexer.FolderDuplicateIndex
 	OllamaClient *ai.OllamaClient
 	OllamaModel  string
-	
+
+	// RecycleFunc performs the RECYCLE action of an approved Proposta.
+	// Defaults to recycle.BatchDelete with the sizes measured just before the call.
+	RecycleFunc RecycleFunc
+
+	// Raízes Varridas: the only paths file-reading tools are allowed to touch.
+	rootsMu      sync.RWMutex
+	allowedRoots []string
+
 	// Active proposals cache for two-phase approval
 	proposalsMu sync.RWMutex
 	proposals   map[string]*ActionProposal
-	
+
+	// execMu serialises approved executions so two approvals of the same Proposta
+	// never act on the disk concurrently.
+	execMu sync.Mutex
+
 	// Metadata store
 	metadataMu sync.RWMutex
 	metadata   map[string]FileMetadata
@@ -54,10 +74,11 @@ type FileMetadata struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// ActionProposal represents a proposed disk action with dry-run capabilities.
+// ActionProposal represents a Proposta: an action over files that stays pending until
+// the user approves it in the interface. The Assistente never executes it directly.
 type ActionProposal struct {
 	ID          string    `json:"id"`
-	ActionType  string    `json:"actionType"` // "RECYCLE", "MOVE", "TAG", "ARCHIVE"
+	ActionType  string    `json:"actionType"` // "RECYCLE", "MOVE", "TAG", "MARK_REVIEW"
 	Description string    `json:"description"`
 	Files       []string  `json:"files"`
 	FileCount   int       `json:"fileCount"`
@@ -68,6 +89,8 @@ type ActionProposal struct {
 	DryRun      bool      `json:"dryRun"`
 	Executed    bool      `json:"executed"`
 	CreatedAt   time.Time `json:"createdAt"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	Errors      []string  `json:"errors,omitempty"`
 }
 
 // NewMCPToolsContext initializes the tools context with optional vision model access.
@@ -248,10 +271,11 @@ type FileAnalysisResult struct {
 }
 
 type SQLiteInspection struct {
-	Tables    []string          `json:"tables"`
-	TotalRows int               `json:"totalRows"`
-	Schema    map[string]string `json:"schema"`
-	QueryRows []map[string]interface{} `json:"queryRows,omitempty"`
+	Tables     []string                 `json:"tables"`
+	TotalRows  int                      `json:"totalRows"`
+	Schema     map[string]string        `json:"schema"`
+	QueryRows  []map[string]interface{} `json:"queryRows,omitempty"`
+	QueryError string                   `json:"queryError,omitempty"`
 }
 
 type PDFInspection struct {
@@ -266,7 +290,11 @@ func (tc *MCPToolsContext) AnalyzeFileContent(ctx context.Context, params Analyz
 		return nil, fmt.Errorf("filepath é obrigatório")
 	}
 
-	cleanPath := filepath.Clean(params.FilePath)
+	cleanPath, err := tc.ensurePathAllowed(params.FilePath)
+	if err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("arquivo não encontrado: %w", err)
@@ -402,7 +430,7 @@ func inspectPDF(pdfPath string, maxLines int) (*PDFInspection, error) {
 }
 
 func inspectSQLite(ctx context.Context, dbPath string, userQuery string) (*SQLiteInspection, error) {
-	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
+	db, err := openReadOnlySQLite(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -429,32 +457,47 @@ func inspectSQLite(ctx context.Context, dbPath string, userQuery string) (*SQLit
 		Schema: schema,
 	}
 
-	// If a safe SELECT query was provided
-	if userQuery != "" && strings.HasPrefix(strings.ToUpper(strings.TrimSpace(userQuery)), "SELECT") {
-		qRows, errQ := db.QueryContext(ctx, userQuery)
-		if errQ == nil {
-			defer qRows.Close()
-			cols, _ := qRows.Columns()
-			for qRows.Next() && len(res.QueryRows) < 20 {
-				columns := make([]interface{}, len(cols))
-				columnPointers := make([]interface{}, len(cols))
-				for i := range columns {
-					columnPointers[i] = &columns[i]
-				}
-				if errScan := qRows.Scan(columnPointers...); errScan == nil {
-					rowMap := make(map[string]interface{})
-					for i, colName := range cols {
-						val := columns[i]
-						if b, ok := val.([]byte); ok {
-							rowMap[colName] = string(b)
-						} else {
-							rowMap[colName] = val
-						}
-					}
-					res.QueryRows = append(res.QueryRows, rowMap)
+	if strings.TrimSpace(userQuery) == "" {
+		return res, nil
+	}
+
+	if errVal := validateUserSQLiteQuery(userQuery); errVal != nil {
+		res.QueryError = fmt.Sprintf("consulta recusada: %v", errVal)
+		return res, nil
+	}
+
+	qCtx, cancel := context.WithTimeout(ctx, sqliteQueryTimeoutSeconds*time.Second)
+	defer cancel()
+
+	qRows, errQ := db.QueryContext(qCtx, userQuery)
+	if errQ != nil {
+		res.QueryError = fmt.Sprintf("falha ao executar a consulta: %v", errQ)
+		return res, nil
+	}
+	defer qRows.Close()
+
+	cols, _ := qRows.Columns()
+	for qRows.Next() && len(res.QueryRows) < maxSQLiteQueryRows {
+		columns := make([]interface{}, len(cols))
+		columnPointers := make([]interface{}, len(cols))
+		for i := range columns {
+			columnPointers[i] = &columns[i]
+		}
+		if errScan := qRows.Scan(columnPointers...); errScan == nil {
+			rowMap := make(map[string]interface{})
+			for i, colName := range cols {
+				val := columns[i]
+				if b, ok := val.([]byte); ok {
+					rowMap[colName] = string(b)
+				} else {
+					rowMap[colName] = val
 				}
 			}
+			res.QueryRows = append(res.QueryRows, rowMap)
 		}
+	}
+	if errRows := qRows.Err(); errRows != nil {
+		res.QueryError = fmt.Sprintf("falha ao ler o resultado da consulta: %v", errRows)
 	}
 
 	return res, nil
@@ -501,7 +544,11 @@ func (tc *MCPToolsContext) AnalyzeImageVisual(ctx context.Context, params Analyz
 		return nil, fmt.Errorf("filepath é obrigatório")
 	}
 
-	cleanPath := filepath.Clean(params.FilePath)
+	cleanPath, err := tc.ensurePathAllowed(params.FilePath)
+	if err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("imagem não encontrada: %w", err)
@@ -624,8 +671,14 @@ func (tc *MCPToolsContext) CompareVisualSimilarity(ctx context.Context, params C
 		return nil, fmt.Errorf("filepath_a e filepath_b são obrigatórios")
 	}
 
-	pathA := filepath.Clean(params.FilePathA)
-	pathB := filepath.Clean(params.FilePathB)
+	pathA, err := tc.ensurePathAllowed(params.FilePathA)
+	if err != nil {
+		return nil, err
+	}
+	pathB, err := tc.ensurePathAllowed(params.FilePathB)
+	if err != nil {
+		return nil, err
+	}
 
 	infoA, errA := os.Stat(pathA)
 	infoB, errB := os.Stat(pathB)
@@ -744,6 +797,19 @@ func (tc *MCPToolsContext) WriteFileMetadata(params WriteMetadataParams) (FileMe
 		return FileMetadata{}, fmt.Errorf("target (caminho ou hash) é obrigatório")
 	}
 
+	// The sidecar writes to disk, so it is only allowed inside the Raízes Varridas.
+	sidecarPath := ""
+	if params.Sidecar {
+		clean, err := tc.ensurePathAllowed(params.Target)
+		if err != nil {
+			return FileMetadata{}, err
+		}
+		if !fileExists(clean) {
+			return FileMetadata{}, fmt.Errorf("alvo do sidecar não existe no disco: %s", clean)
+		}
+		sidecarPath = clean + ".scanfile_meta.json"
+	}
+
 	meta := FileMetadata{
 		FilePath:  params.Target,
 		Category:  params.Category,
@@ -756,11 +822,13 @@ func (tc *MCPToolsContext) WriteFileMetadata(params WriteMetadataParams) (FileMe
 	tc.metadata[params.Target] = meta
 	tc.metadataMu.Unlock()
 
-	// Write sidecar JSON file next to target if requested and target is a file
-	if params.Sidecar && fileExists(params.Target) {
-		sidecarPath := params.Target + ".scanfile_meta.json"
-		if data, err := json.MarshalIndent(meta, "", "  "); err == nil {
-			_ = os.WriteFile(sidecarPath, data, 0644)
+	if sidecarPath != "" {
+		data, err := json.MarshalIndent(meta, "", "  ")
+		if err != nil {
+			return meta, fmt.Errorf("falha ao serializar metadados: %w", err)
+		}
+		if err := os.WriteFile(sidecarPath, data, 0o644); err != nil {
+			return meta, fmt.Errorf("falha ao gravar sidecar %s: %w", sidecarPath, err)
 		}
 	}
 
@@ -780,17 +848,29 @@ type ProposeActionParams struct {
 	DryRun      bool     `json:"dry_run"`
 }
 
+// ProposeActions registers a pending Proposta. It NEVER touches the disk: the
+// dry_run argument sent by the model is ignored and the answer always reports
+// dryRun: true. Execution only happens through ExecuteProposal, which the server
+// calls after the user approves the Proposta in the interface.
 func (tc *MCPToolsContext) ProposeActions(params ProposeActionParams) (*ActionProposal, error) {
 	if len(params.Files) == 0 {
 		return nil, fmt.Errorf("nenhum arquivo especificado para ação")
+	}
+
+	actionType := strings.ToUpper(strings.TrimSpace(params.ActionType))
+	if !isSupportedActionType(actionType) {
+		return nil, fmt.Errorf("tipo de ação não suportado: %q (use RECYCLE, MOVE, TAG ou MARK_REVIEW)", params.ActionType)
 	}
 
 	var totalBytes int64
 	var validFiles []string
 
 	for _, f := range params.Files {
-		clean := filepath.Clean(f)
-		if info, err := os.Stat(clean); err == nil {
+		clean, err := tc.ensurePathAllowed(f)
+		if err != nil {
+			return nil, err
+		}
+		if info, statErr := os.Stat(clean); statErr == nil {
 			totalBytes += info.Size()
 			validFiles = append(validFiles, clean)
 		}
@@ -800,92 +880,219 @@ func (tc *MCPToolsContext) ProposeActions(params ProposeActionParams) (*ActionPr
 		return nil, fmt.Errorf("nenhum dos arquivos fornecidos foi encontrado no disco")
 	}
 
-	proposalID := fmt.Sprintf("prop_%d", time.Now().UnixNano())
+	destination := params.Destination
+	if actionType == "MOVE" {
+		if strings.TrimSpace(destination) == "" {
+			return nil, fmt.Errorf("destino não especificado para operação MOVE")
+		}
+		cleanDest, err := tc.ensurePathAllowed(destination)
+		if err != nil {
+			return nil, err
+		}
+		destination = cleanDest
+	}
+
+	now := time.Now()
+	proposalID := newProposalID(now)
 	proposal := &ActionProposal{
 		ID:          proposalID,
-		ActionType:  strings.ToUpper(params.ActionType),
+		ActionType:  actionType,
 		Description: params.Description,
 		Files:       validFiles,
 		FileCount:   len(validFiles),
 		TotalBytes:  totalBytes,
 		TotalSize:   formatBytes(totalBytes),
-		Destination: params.Destination,
+		Destination: destination,
 		Category:    params.Category,
-		DryRun:      params.DryRun,
-		Executed:    false,
-		CreatedAt:   time.Now(),
+		// A Proposta is always pending: the model can never request execution.
+		DryRun:    true,
+		Executed:  false,
+		CreatedAt: now,
+		ExpiresAt: now.Add(ProposalTTL),
 	}
 
 	if proposal.Description == "" {
-		proposal.Description = fmt.Sprintf("Proposta de %s para %d arquivos (Total: %s)",
+		proposal.Description = fmt.Sprintf("Proposta de %s para %d arquivos (Total: %s). Pendente de aprovação do usuário.",
 			proposal.ActionType, proposal.FileCount, proposal.TotalSize)
 	}
 
 	tc.proposalsMu.Lock()
+	tc.purgeExpiredProposalsLocked(now)
 	tc.proposals[proposalID] = proposal
 	tc.proposalsMu.Unlock()
-
-	if !params.DryRun {
-		_, err := tc.ExecuteProposal(proposalID)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	return proposal, nil
 }
 
-// ExecuteProposal executes an approved proposal.
+// GetProposal returns a copy of a pending Proposta without executing it.
+func (tc *MCPToolsContext) GetProposal(proposalID string) (*ActionProposal, bool) {
+	tc.proposalsMu.RLock()
+	defer tc.proposalsMu.RUnlock()
+
+	p, ok := tc.proposals[proposalID]
+	if !ok || time.Now().After(p.ExpiresAt) {
+		return nil, false
+	}
+
+	snapshot := *p
+	return &snapshot, true
+}
+
+// ExecuteProposal executes a Proposta already approved by the user. It is never
+// reachable from a tool call issued by the model.
 func (tc *MCPToolsContext) ExecuteProposal(proposalID string) (*ActionProposal, error) {
+	// Serialise approvals: the disk work happens outside proposalsMu so that the
+	// interface can keep reading proposals while a batch is running.
+	tc.execMu.Lock()
+	defer tc.execMu.Unlock()
+
+	now := time.Now()
+
 	tc.proposalsMu.Lock()
-	proposal, exists := tc.proposals[proposalID]
+	tc.purgeExpiredProposalsLocked(now)
+	stored, exists := tc.proposals[proposalID]
+	var proposal ActionProposal
+	if exists {
+		proposal = *stored
+	}
 	tc.proposalsMu.Unlock()
 
 	if !exists {
-		return nil, fmt.Errorf("proposta %s não encontrada ou expirada", proposalID)
+		return nil, fmt.Errorf("proposta %s não encontrada ou expirada (as propostas valem por %d minutos)", proposalID, int(ProposalTTL.Minutes()))
 	}
 
 	if proposal.Executed {
-		return proposal, nil
+		return &proposal, nil
 	}
+
+	var errs []string
+	var execErr error
+	executed := false
 
 	switch proposal.ActionType {
 	case "RECYCLE":
-		fileSizes := make(map[string]int64)
-		for _, f := range proposal.Files {
-			if st, err := os.Stat(f); err == nil {
-				fileSizes[f] = st.Size()
-			}
+		res := tc.recycleFunc()(proposal.Files)
+		errs = append(errs, res.Errors...)
+		if res.FailedCount > 0 {
+			execErr = fmt.Errorf("falha ao enviar %d de %d arquivos para a Lixeira: %s",
+				res.FailedCount, len(proposal.Files), strings.Join(res.Errors, "; "))
+		} else {
+			executed = true
 		}
-		res := recycle.BatchDelete(proposal.Files, fileSizes, true)
-		if res.SuccessCount == 0 && res.FailedCount > 0 {
-			return nil, fmt.Errorf("falha ao enviar arquivos para a lixeira: %s", strings.Join(res.Errors, ", "))
-		}
-		proposal.Executed = true
 
 	case "MOVE":
-		if proposal.Destination == "" {
-			return nil, fmt.Errorf("destino não especificado para operação MOVE")
+		switch {
+		case strings.TrimSpace(proposal.Destination) == "":
+			execErr = fmt.Errorf("destino não especificado para operação MOVE")
+		default:
+			if err := os.MkdirAll(proposal.Destination, 0o755); err != nil {
+				execErr = fmt.Errorf("falha ao criar pasta de destino %s: %w", proposal.Destination, err)
+				break
+			}
+			for _, f := range proposal.Files {
+				destFile := filepath.Join(proposal.Destination, filepath.Base(f))
+				if _, err := os.Lstat(destFile); err == nil {
+					errs = append(errs, fmt.Sprintf("%s: destino já existe (%s), nada foi sobrescrito", f, destFile))
+					continue
+				}
+				if err := os.Rename(f, destFile); err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", f, err))
+				}
+			}
+			if len(errs) > 0 {
+				execErr = fmt.Errorf("mover arquivos falhou em %d item(ns): %s", len(errs), strings.Join(errs, "; "))
+			} else {
+				executed = true
+			}
 		}
-		_ = os.MkdirAll(proposal.Destination, 0755)
-		for _, f := range proposal.Files {
-			destFile := filepath.Join(proposal.Destination, filepath.Base(f))
-			_ = os.Rename(f, destFile)
-		}
-		proposal.Executed = true
 
 	case "TAG":
 		for _, f := range proposal.Files {
-			_, _ = tc.WriteFileMetadata(WriteMetadataParams{
+			if _, err := tc.WriteFileMetadata(WriteMetadataParams{
 				Target:   f,
 				Category: proposal.Category,
 				Sidecar:  true,
-			})
+			}); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", f, err))
+			}
 		}
-		proposal.Executed = true
+		if len(errs) > 0 {
+			execErr = fmt.Errorf("marcar arquivos falhou em %d item(ns): %s", len(errs), strings.Join(errs, "; "))
+		} else {
+			executed = true
+		}
+
+	case "MARK_REVIEW":
+		// Nothing to do on disk: the Proposta only flags files for human review.
+		executed = true
+
+	default:
+		execErr = fmt.Errorf("tipo de ação não suportado: %s", proposal.ActionType)
 	}
 
-	return proposal, nil
+	tc.proposalsMu.Lock()
+	if current, ok := tc.proposals[proposalID]; ok {
+		current.Errors = errs
+		current.Executed = executed
+		proposal = *current
+	} else {
+		proposal.Errors = errs
+		proposal.Executed = executed
+	}
+	tc.proposalsMu.Unlock()
+
+	return &proposal, execErr
+}
+
+// proposalSeq disambiguates proposals created within the same clock tick.
+var proposalSeq atomic.Uint64
+
+// newProposalID builds a Proposta identifier that is unique inside the process.
+// The wall clock alone is not enough: on Windows time.Now() has a resolution of
+// milliseconds, so two proposals registered in quick succession would share an ID
+// and one would silently replace the other in the pending map — the user could
+// then approve a Proposta showing different files from the ones executed.
+func newProposalID(now time.Time) string {
+	return fmt.Sprintf("prop_%d_%d", now.UnixNano(), proposalSeq.Add(1))
+}
+
+// recycleFunc returns the injected RecycleFunc or the production default.
+func (tc *MCPToolsContext) recycleFunc() RecycleFunc {
+	if tc.RecycleFunc != nil {
+		return tc.RecycleFunc
+	}
+	return defaultRecycleFunc
+}
+
+// defaultRecycleFunc measures the sizes right before sending the paths to the
+// Windows Recycle Bin so that freedBytes is accurate.
+func defaultRecycleFunc(paths []string) recycle.BatchDeleteResult {
+	sizes := make(map[string]int64, len(paths))
+	for _, p := range paths {
+		if st, err := os.Stat(p); err == nil {
+			sizes[p] = st.Size()
+		}
+	}
+	return recycle.BatchDelete(paths, sizes, true)
+}
+
+// purgeExpiredProposalsLocked drops proposals older than ProposalTTL.
+// The caller must hold proposalsMu for writing.
+func (tc *MCPToolsContext) purgeExpiredProposalsLocked(now time.Time) {
+	for id, p := range tc.proposals {
+		if now.After(p.ExpiresAt) {
+			delete(tc.proposals, id)
+		}
+	}
+}
+
+func isSupportedActionType(actionType string) bool {
+	switch actionType {
+	case "RECYCLE", "MOVE", "TAG", "MARK_REVIEW":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatBytes(b int64) string {
