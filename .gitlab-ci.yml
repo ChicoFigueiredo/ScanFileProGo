@@ -3,6 +3,10 @@
 # Espelho do pipeline oficial em .github/workflows/ci-cd.yml (Q14/Q34).
 # A versao do Go acompanha o go.mod (go 1.26.x).
 
+# A imagem fixa a serie do Go; o go.mod manda na versao exata (GOTOOLCHAIN=auto
+# baixa a toolchain pedida se a imagem vier com um patch anterior). O GitHub
+# Actions le go-version-file: go.mod; aqui a imagem precisa acompanhar um bump
+# de serie do go.mod na mao.
 image: golang:1.26
 
 stages:

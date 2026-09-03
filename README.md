@@ -212,7 +212,7 @@ A CI de referência é o GitHub Actions ([`.github/workflows/ci-cd.yml`](.github
 
 ```powershell
 go test ./... -count=1
-node --test "ui/tests/*.test.mjs"
+node --test "ui/tests/**/*.test.mjs"
 ```
 
 Números medidos neste repositório em 3 de setembro de 2026, com os comandos acima:
