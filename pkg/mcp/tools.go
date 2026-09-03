@@ -91,6 +91,23 @@ type ActionProposal struct {
 	CreatedAt   time.Time `json:"createdAt"`
 	ExpiresAt   time.Time `json:"expiresAt"`
 	Errors      []string  `json:"errors,omitempty"`
+
+	// Outcome of the approved execution. The fields below are additive and stay
+	// zeroed while the Proposta is pending.
+	//
+	// A refusal (Pasta Protegida, volume sem Lixeira disponível, destino já
+	// existente) is never a success: it leaves the item untouched on disk. Only
+	// SucceededCount counts items that really left their original place, and
+	// Executed is true only when at least one of them did — so a batch refused
+	// in full stays pending and the user can approve it again after fixing the
+	// cause.
+	SucceededCount int `json:"succeededCount"`
+	RefusedCount   int `json:"refusedCount"`
+	FailedCount    int `json:"failedCount"`
+	// FreedBytes counts only the bytes that really left the original location
+	// (recycled or moved). TAG and MARK_REVIEW never move data and report 0.
+	FreedBytes int64  `json:"freedBytes"`
+	FreedSize  string `json:"freedSize,omitempty"`
 }
 
 // NewMCPToolsContext initializes the tools context with optional vision model access.
@@ -965,20 +982,29 @@ func (tc *MCPToolsContext) ExecuteProposal(proposalID string) (*ActionProposal, 
 		return &proposal, nil
 	}
 
-	var errs []string
+	var out actionOutcome
 	var execErr error
-	executed := false
 
 	switch proposal.ActionType {
 	case "RECYCLE":
 		res := tc.recycleFunc()(proposal.Files)
-		errs = append(errs, res.Errors...)
-		if res.FailedCount > 0 {
-			execErr = fmt.Errorf("falha ao enviar %d de %d arquivos para a Lixeira: %s",
-				res.FailedCount, len(proposal.Files), strings.Join(res.Errors, "; "))
-		} else {
-			executed = true
+		out.succeeded = res.SuccessCount
+		out.refused = res.RefusedCount
+		out.failed = res.FailedCount
+		out.freedBytes = res.FreedBytes
+		out.errs = append(out.errs, res.Errors...)
+		// A refusal never reaches Errors in the batch result: the reason lives in
+		// the per-item outcome, and it is exactly what the user needs to read to
+		// know why nothing left the disk.
+		for _, item := range res.Items {
+			if item.Status == recycle.StatusRefused {
+				out.errs = append(out.errs, refusalMessage(item.Path, item.Reason))
+			}
 		}
+		if out.refused > 0 && len(res.Items) == 0 {
+			out.errs = append(out.errs, fmt.Sprintf("%d item(ns) recusado(s) pela Reciclagem, sem motivo detalhado", out.refused))
+		}
+		execErr = out.err("enviar para a Lixeira", len(proposal.Files))
 
 	case "MOVE":
 		switch {
@@ -992,18 +1018,24 @@ func (tc *MCPToolsContext) ExecuteProposal(proposalID string) (*ActionProposal, 
 			for _, f := range proposal.Files {
 				destFile := filepath.Join(proposal.Destination, filepath.Base(f))
 				if _, err := os.Lstat(destFile); err == nil {
-					errs = append(errs, fmt.Sprintf("%s: destino já existe (%s), nada foi sobrescrito", f, destFile))
+					// Recusa, não falha: o arquivo continua inteiro na origem.
+					out.refused++
+					out.errs = append(out.errs, fmt.Sprintf("%s: destino já existe (%s), nada foi sobrescrito", f, destFile))
 					continue
 				}
-				if err := os.Rename(f, destFile); err != nil {
-					errs = append(errs, fmt.Sprintf("%s: %v", f, err))
+				var moved int64
+				if info, statErr := os.Stat(f); statErr == nil {
+					moved = info.Size()
 				}
+				if err := os.Rename(f, destFile); err != nil {
+					out.failed++
+					out.errs = append(out.errs, fmt.Sprintf("%s: %v", f, err))
+					continue
+				}
+				out.succeeded++
+				out.freedBytes += moved
 			}
-			if len(errs) > 0 {
-				execErr = fmt.Errorf("mover arquivos falhou em %d item(ns): %s", len(errs), strings.Join(errs, "; "))
-			} else {
-				executed = true
-			}
+			execErr = out.err("mover arquivos", len(proposal.Files))
 		}
 
 	case "TAG":
@@ -1013,18 +1045,18 @@ func (tc *MCPToolsContext) ExecuteProposal(proposalID string) (*ActionProposal, 
 				Category: proposal.Category,
 				Sidecar:  true,
 			}); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", f, err))
+				out.failed++
+				out.errs = append(out.errs, fmt.Sprintf("%s: %v", f, err))
+				continue
 			}
+			out.succeeded++
 		}
-		if len(errs) > 0 {
-			execErr = fmt.Errorf("marcar arquivos falhou em %d item(ns): %s", len(errs), strings.Join(errs, "; "))
-		} else {
-			executed = true
-		}
+		// Marcar não move dado nenhum: freedBytes fica em zero.
+		execErr = out.err("marcar arquivos", len(proposal.Files))
 
 	case "MARK_REVIEW":
 		// Nothing to do on disk: the Proposta only flags files for human review.
-		executed = true
+		out.succeeded = len(proposal.Files)
 
 	default:
 		execErr = fmt.Errorf("tipo de ação não suportado: %s", proposal.ActionType)
@@ -1032,16 +1064,73 @@ func (tc *MCPToolsContext) ExecuteProposal(proposalID string) (*ActionProposal, 
 
 	tc.proposalsMu.Lock()
 	if current, ok := tc.proposals[proposalID]; ok {
-		current.Errors = errs
-		current.Executed = executed
+		out.applyTo(current)
 		proposal = *current
 	} else {
-		proposal.Errors = errs
-		proposal.Executed = executed
+		out.applyTo(&proposal)
 	}
 	tc.proposalsMu.Unlock()
 
 	return &proposal, execErr
+}
+
+// actionOutcome accumulates what an approved Proposta really did on disk.
+//
+// Recusado, falhado e executado são três coisas diferentes: a recusa é uma
+// decisão tomada antes de tocar no disco (Pasta Protegida, volume sem Lixeira
+// disponível, destino já ocupado) e deixa o item exatamente onde estava. Só
+// `succeeded` conta item que saiu do lugar de origem, e é ele que decide se a
+// Proposta pode ser dada como executada.
+type actionOutcome struct {
+	succeeded  int
+	refused    int
+	failed     int
+	freedBytes int64
+	errs       []string
+}
+
+// executed reports whether at least one item really left its original place. A
+// batch refused or failed in full leaves the Proposta pending, so the user can
+// approve it again after fixing the cause instead of losing it.
+func (out *actionOutcome) executed() bool { return out.succeeded > 0 }
+
+// err builds the error handed back to the caller, naming how many items were
+// refused and how many failed, and carrying every reason collected.
+func (out *actionOutcome) err(action string, total int) error {
+	if out.refused == 0 && out.failed == 0 {
+		return nil
+	}
+
+	var parts []string
+	if out.refused > 0 {
+		parts = append(parts, fmt.Sprintf("%d recusado(s)", out.refused))
+	}
+	if out.failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d com falha", out.failed))
+	}
+
+	return fmt.Errorf("%s: %s de %d item(ns), %d concluído(s): %s",
+		action, strings.Join(parts, " e "), total, out.succeeded, strings.Join(out.errs, "; "))
+}
+
+// applyTo copies the outcome onto the stored Proposta.
+func (out *actionOutcome) applyTo(p *ActionProposal) {
+	p.Errors = out.errs
+	p.Executed = out.executed()
+	p.SucceededCount = out.succeeded
+	p.RefusedCount = out.refused
+	p.FailedCount = out.failed
+	p.FreedBytes = out.freedBytes
+	p.FreedSize = formatBytes(out.freedBytes)
+}
+
+// refusalMessage renders one refused item for the user, keeping the reason
+// reported by pkg/recycle.
+func refusalMessage(path, reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Sprintf("%s: recusado, nada foi tocado no disco", path)
+	}
+	return fmt.Sprintf("%s: recusado, %s", path, reason)
 }
 
 // proposalSeq disambiguates proposals created within the same clock tick.

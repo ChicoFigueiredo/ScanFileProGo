@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/cespare/xxhash/v2"
 	"scanfile/pkg/scanner"
 )
 
@@ -42,25 +43,80 @@ func (grp *DuplicateGroup) clone() *DuplicateGroup {
 	return &cp
 }
 
+// contentKey identifies a set of identical files without keeping one string per
+// file: the Hash Completo is folded into 64 bits and paired with the Tamanho
+// Lógico, which isolates same-hash files of different sizes.
+//
+// A dobra tem colisão possível, e por isso ela nunca decide sozinha: antes de
+// juntar um arquivo a um grupo ou a um candidato solitário, o Hash Completo em
+// texto é comparado. Uma colisão (mesmos 64 bits dobrados e mesmo tamanho, algo
+// em torno de 1 em 100 mil para 50 milhões de arquivos) deixa um arquivo fora do
+// índice até a próxima reconstrução; ela nunca produz um falso duplicado.
+type contentKey struct {
+	fingerprint uint64
+	size        int64
+}
+
+// contentKeyOf folds a Hash Completo and a size into the map key.
+func contentKeyOf(hash string, size int64) contentKey {
+	return contentKey{fingerprint: xxhash.Sum64String(hash), size: size}
+}
+
+// trackedFile is what a folder record keeps per indexed file: o ponteiro do nó,
+// que é a identidade dele, mais a dobra do hash sob o qual ele foi arquivado.
+// São 16 bytes, sem caminho e sem string: o nome sai do próprio nó (ADR-0001).
+//
+// A dobra é guardada em vez de recalculada porque o hash de um nó pode ser
+// reescrito no lugar depois que ele entrou no índice — a Varredura Rápida
+// descarta hash de outro algoritmo assim —, e aí o arquivo removido não seria
+// achado no grupo dele e viraria um fantasma. O Tamanho Lógico não tem esse
+// problema: nada no projeto reescreve Size num nó vivo, o Monitoramento sempre
+// monta um nó novo.
+type trackedFile struct {
+	node        *scanner.FileNode
+	fingerprint uint64
+}
+
+// key rebuilds the content key the file was filed under.
+func (tracked trackedFile) key() contentKey {
+	return contentKey{fingerprint: tracked.fingerprint, size: tracked.node.Size}
+}
+
 // DuplicateIndex stores and queries grouped duplicate files.
 //
-// groups only ever holds sets of two or more files. A file whose composite key
-// is still unique is parked in singles, so a later UpsertFile promotes the pair
-// in O(1) instead of forcing a full rebuild (achado M3). pathKeys maps a
-// normalized path to its composite key, which makes removal O(1) too (achado H4).
+// groups only ever holds sets of two or more files. A file whose content key is
+// still unique is parked in singles, so a later UpsertFile promotes the pair in
+// O(1) instead of forcing a full rebuild (achado M3).
+//
+// Apagar um arquivo do índice também é O(1), e sem guardar caminho nenhum
+// (ADR-0001): dirFiles guarda uma entrada por *pasta* — o caminho normalizado
+// dela — apontando para os arquivos indexados que moram ali. O ponteiro do
+// FileNode é a identidade, e o nome do arquivo vem do próprio nó, então o custo
+// por arquivo são 16 bytes na fatia da pasta, não um caminho absoluto minúsculo
+// recém-montado. A busca dentro da pasta é limitada aos arquivos hasheados
+// dela, nunca ao índice inteiro (achado H4).
 type DuplicateIndex struct {
 	mu       sync.RWMutex
-	groups   map[string]*DuplicateGroup // Key: hash + "|" + size
-	singles  map[string]*scanner.FileNode
-	pathKeys map[string]string // normalized path -> composite key
+	groups   map[contentKey]*DuplicateGroup
+	singles  map[contentKey]*scanner.FileNode
+	dirFiles map[string][]trackedFile // normalized directory path -> indexed files
+
+	// lastParent e lastDirPath lembram a última pasta cujo caminho foi derivado.
+	// Uma reconstrução caminha a árvore em ordem, então os arquivos de uma mesma
+	// pasta chegam juntos e o caminho é montado uma vez por pasta, não por
+	// arquivo. Protegidos pelo lock de escrita, como o resto do índice. O cache
+	// guarda só o caminho: uma pasta apagada de dirFiles volta sozinha no
+	// próximo arquivo indexado ali.
+	lastParent  *scanner.DirNode
+	lastDirPath string
 }
 
 // NewDuplicateIndex creates a new index instance.
 func NewDuplicateIndex() *DuplicateIndex {
 	return &DuplicateIndex{
-		groups:   make(map[string]*DuplicateGroup),
-		singles:  make(map[string]*scanner.FileNode),
-		pathKeys: make(map[string]string),
+		groups:   make(map[contentKey]*DuplicateGroup),
+		singles:  make(map[contentKey]*scanner.FileNode),
+		dirFiles: make(map[string][]trackedFile),
 	}
 }
 
@@ -69,9 +125,90 @@ func normalizePath(path string) string {
 	return strings.ToLower(filepath.Clean(path))
 }
 
-// groupKey is the composite key that isolates same-hash files of different sizes.
+// groupKey is the composite identifier exposed to the interface as DuplicateGroup.ID.
+// It is built once per group, never once per file.
 func groupKey(hash string, size int64) string {
 	return fmt.Sprintf("%s|%d", hash, size)
+}
+
+// dirPathOf returns the normalized path of the folder holding f, reusing the
+// last derived one whenever the parent repeats. The caller holds the write lock.
+func (idx *DuplicateIndex) dirPathOf(f *scanner.FileNode) string {
+	parent := f.Parent()
+	if parent == nil {
+		return normalizePath(filepath.Dir(f.Path()))
+	}
+	if parent == idx.lastParent {
+		return idx.lastDirPath
+	}
+	path := normalizePath(parent.Path())
+	idx.lastParent, idx.lastDirPath = parent, path
+	return path
+}
+
+// trackLocked remembers which folder f lives in. The caller holds the write lock.
+func (idx *DuplicateIndex) trackLocked(dir string, f *scanner.FileNode, key contentKey) {
+	idx.dirFiles[dir] = append(idx.dirFiles[dir], trackedFile{node: f, fingerprint: key.fingerprint})
+}
+
+// untrackLocked drops the file named base from folder dir and returns what was
+// tracked there. ok is false when the folder never held that name. Names are
+// matched case-insensitively, as Windows does. The caller holds the write lock.
+func (idx *DuplicateIndex) untrackLocked(dir, base string) (trackedFile, bool) {
+	list, known := idx.dirFiles[dir]
+	if !known {
+		return trackedFile{}, false
+	}
+
+	for i, tracked := range list {
+		if tracked.node == nil || !strings.EqualFold(tracked.node.Name(), base) {
+			continue
+		}
+		last := len(list) - 1
+		list[i] = list[last]
+		list[last] = trackedFile{}
+		list = list[:last]
+		if len(list) == 0 {
+			delete(idx.dirFiles, dir)
+		} else {
+			idx.dirFiles[dir] = list
+		}
+		return tracked, true
+	}
+	return trackedFile{}, false
+}
+
+// detachLocked drops one tracked file from its group or from the singles park,
+// keeping FileCount and WastedBytes consistent. The caller holds the write lock.
+func (idx *DuplicateIndex) detachLocked(tracked trackedFile) {
+	f, key := tracked.node, tracked.key()
+
+	if grp, exists := idx.groups[key]; exists {
+		for i, other := range grp.Files {
+			if other != f {
+				continue
+			}
+			// A ordem por ModTime é parte do contrato do grupo, então a remoção
+			// preserva a ordem em vez de trocar com o último.
+			grp.Files = append(grp.Files[:i], grp.Files[i+1:]...)
+			grp.FileCount = len(grp.Files)
+			if grp.FileCount < 2 {
+				delete(idx.groups, key)
+				if grp.FileCount == 1 {
+					// The survivor stays known so a future twin re-forms the group.
+					idx.singles[key] = grp.Files[0]
+				}
+				return
+			}
+			grp.WastedBytes = int64(grp.FileCount-1) * grp.FileSize
+			return
+		}
+		return
+	}
+
+	if single, exists := idx.singles[key]; exists && single == f {
+		delete(idx.singles, key)
+	}
 }
 
 // RebuildIndex scans all FileNodes and builds duplicate groups.
@@ -79,35 +216,44 @@ func (idx *DuplicateIndex) RebuildIndex(files []*scanner.FileNode) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	idx.groups = make(map[string]*DuplicateGroup)
-	idx.singles = make(map[string]*scanner.FileNode)
-	idx.pathKeys = make(map[string]string, len(files))
+	idx.groups = make(map[contentKey]*DuplicateGroup)
+	idx.singles = make(map[contentKey]*scanner.FileNode)
+	idx.dirFiles = make(map[string][]trackedFile)
+	idx.lastParent, idx.lastDirPath = nil, ""
 
-	// Step 1: Bucket files by composite key (hash + size)
+	// Step 1: Bucket files by content key (hash + size)
 	for _, f := range files {
-		if f == nil || f.Hash() == "" {
+		if f == nil {
+			continue
+		}
+		hash := f.Hash()
+		if hash == "" {
 			continue
 		}
 
-		// Collision safety: composite key ensures different sized files with hypothetical same hash are isolated
-		key := groupKey(f.Hash(), f.Size)
+		// Collision safety: the size in the key isolates different sized files
+		// with a hypothetical same hash; grp.Hash isolates a folded fingerprint
+		// that happened to repeat.
+		key := contentKeyOf(hash, f.Size)
 		grp, exists := idx.groups[key]
 		if !exists {
 			grp = &DuplicateGroup{
-				ID:         key,
-				Hash:       f.Hash(),
+				ID:         groupKey(hash, f.Size),
+				Hash:       hash,
 				FileSize:   f.Size,
 				Confidence: ConfidenceHash,
 				Files:      make([]*scanner.FileNode, 0, 2),
 			}
 			idx.groups[key] = grp
+		} else if grp.Hash != hash {
+			continue
 		}
 		grp.Files = append(grp.Files, f)
 		grp.FileCount = len(grp.Files)
 		if grp.FileCount > 1 {
 			grp.WastedBytes = int64(grp.FileCount-1) * grp.FileSize
 		}
-		idx.pathKeys[normalizePath(f.Path())] = key
+		idx.trackLocked(idx.dirPathOf(f), f, key)
 	}
 
 	// Step 2: Park groups with a single file. They are not duplicates today, but
@@ -129,35 +275,46 @@ func (idx *DuplicateIndex) RebuildIndex(files []*scanner.FileNode) {
 // WastedBytes consistent. A file that arrives without a hash (locked, or not
 // hashed yet) leaves the index instead of posing as a duplicate.
 func (idx *DuplicateIndex) UpsertFile(f *scanner.FileNode) {
-	if f == nil || f.Path() == "" {
+	if f == nil || f.Name() == "" {
 		return
 	}
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	idx.removeLocked(f.Path())
-	if f.Hash() == "" {
-		return
+	// O nó que chega do Monitoramento é novo em folha, mas mora na mesma pasta
+	// com o mesmo nome do anterior: é assim que a versão velha sai do índice.
+	dir := idx.dirPathOf(f)
+	if old, tracked := idx.untrackLocked(dir, f.Name()); tracked {
+		idx.detachLocked(old)
 	}
 
-	norm := normalizePath(f.Path())
-	key := groupKey(f.Hash(), f.Size)
+	hash := f.Hash()
+	if hash == "" {
+		return
+	}
+	key := contentKeyOf(hash, f.Size)
 
 	if grp, exists := idx.groups[key]; exists {
+		if grp.Hash != hash {
+			return
+		}
 		grp.Files = append(grp.Files, f)
 		grp.FileCount = len(grp.Files)
 		grp.WastedBytes = int64(grp.FileCount-1) * grp.FileSize
 		sortByModTime(grp.Files)
-		idx.pathKeys[norm] = key
+		idx.trackLocked(dir, f, key)
 		return
 	}
 
 	if other, exists := idx.singles[key]; exists {
+		if other.Hash() != hash {
+			return
+		}
 		delete(idx.singles, key)
 		grp := &DuplicateGroup{
-			ID:         key,
-			Hash:       f.Hash(),
+			ID:         groupKey(hash, f.Size),
+			Hash:       hash,
 			FileSize:   f.Size,
 			Confidence: ConfidenceHash,
 			Files:      []*scanner.FileNode{other, f},
@@ -166,12 +323,12 @@ func (idx *DuplicateIndex) UpsertFile(f *scanner.FileNode) {
 		grp.FileCount = len(grp.Files)
 		grp.WastedBytes = int64(grp.FileCount-1) * grp.FileSize
 		idx.groups[key] = grp
-		idx.pathKeys[norm] = key
+		idx.trackLocked(dir, f, key)
 		return
 	}
 
 	idx.singles[key] = f
-	idx.pathKeys[norm] = key
+	idx.trackLocked(dir, f, key)
 }
 
 func sortByModTime(files []*scanner.FileNode) {
@@ -180,41 +337,15 @@ func sortByModTime(files []*scanner.FileNode) {
 	})
 }
 
-// removeLocked drops one normalized-or-raw path from the index.
+// removeLocked drops one path from the index, matching case-insensitively.
 // The caller must hold idx.mu for writing.
 func (idx *DuplicateIndex) removeLocked(filePath string) bool {
 	norm := normalizePath(filePath)
-	key, known := idx.pathKeys[norm]
+	tracked, known := idx.untrackLocked(filepath.Dir(norm), filepath.Base(norm))
 	if !known {
 		return false
 	}
-	delete(idx.pathKeys, norm)
-
-	if grp, exists := idx.groups[key]; exists {
-		remaining := make([]*scanner.FileNode, 0, len(grp.Files))
-		for _, f := range grp.Files {
-			if f == nil || normalizePath(f.Path()) == norm {
-				continue
-			}
-			remaining = append(remaining, f)
-		}
-		grp.Files = remaining
-		grp.FileCount = len(remaining)
-		if grp.FileCount < 2 {
-			delete(idx.groups, key)
-			if grp.FileCount == 1 {
-				// The survivor stays known so a future twin re-forms the group.
-				idx.singles[key] = grp.Files[0]
-			}
-			return true
-		}
-		grp.WastedBytes = int64(grp.FileCount-1) * grp.FileSize
-		return true
-	}
-
-	if single, exists := idx.singles[key]; exists && single != nil && normalizePath(single.Path()) == norm {
-		delete(idx.singles, key)
-	}
+	idx.detachLocked(tracked)
 	return true
 }
 
@@ -344,8 +475,9 @@ func (idx *DuplicateIndex) Query(filter QueryFilter) QueryResult {
 	}
 }
 
-// RemoveFileFromIndex removes a deleted file from the index in O(1) through the
-// path map, instead of sweeping every group (achado H4).
+// RemoveFileFromIndex removes a deleted file from the index without sweeping
+// every group (achado H4): the folder of the path leads straight to the node,
+// and the node's own hash leads to its group.
 func (idx *DuplicateIndex) RemoveFileFromIndex(filePath string) {
 	if filePath == "" {
 		return
@@ -357,26 +489,34 @@ func (idx *DuplicateIndex) RemoveFileFromIndex(filePath string) {
 
 // RemoveDirFromIndex removes every indexed file under dirPath and reports how
 // many were dropped. Used when Monitoramento sees a whole folder disappear.
+// A varredura é sobre as pastas conhecidas, não sobre os arquivos.
 func (idx *DuplicateIndex) RemoveDirFromIndex(dirPath string) int {
 	if dirPath == "" {
 		return 0
 	}
-	prefix := normalizePath(dirPath)
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
+
+	root := normalizePath(dirPath)
+	below := root
+	if !strings.HasSuffix(below, string(filepath.Separator)) {
+		below += string(filepath.Separator)
 	}
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	victims := make([]string, 0, 16)
-	for norm := range idx.pathKeys {
-		if strings.HasPrefix(norm, prefix) {
-			victims = append(victims, norm)
+	removed := 0
+	for dir, list := range idx.dirFiles {
+		if dir != root && !strings.HasPrefix(dir, below) {
+			continue
 		}
+		for _, tracked := range list {
+			if tracked.node == nil {
+				continue
+			}
+			idx.detachLocked(tracked)
+			removed++
+		}
+		delete(idx.dirFiles, dir)
 	}
-	for _, victim := range victims {
-		idx.removeLocked(victim)
-	}
-	return len(victims)
+	return removed
 }
