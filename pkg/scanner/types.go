@@ -1,45 +1,109 @@
 package scanner
 
 import (
+	"path/filepath"
 	"sync"
 	"time"
 )
 
-// FileNode represents an individual file in the tree.
-type FileNode struct {
-	Path              string `json:"path"`
-	Name              string `json:"name"`
-	Size              int64  `json:"size"`          // Logical size in bytes (Tamanho Lógico)
-	AllocatedSize     int64  `json:"allocatedSize"` // Physical allocated size on disk in bytes (Tamanho Físico / Alocado)
-	ModTime           int64  `json:"modTime"`       // Unix timestamp in seconds (Modificação)
-	CreateTime        int64  `json:"createTime"`    // Unix timestamp in seconds (Criação)
-	AccessTime        int64  `json:"accessTime"`    // Unix timestamp in seconds (Último Acesso)
-	Hash              string `json:"hash,omitempty"`
-	QuickHash         uint64 `json:"quickHash,omitempty"`
-	Extension         string `json:"extension"`
-	IsSymlink         bool   `json:"isSymlink,omitempty"`
-	LinkTarget        string `json:"linkTarget,omitempty"`
-	IsCompressed      bool   `json:"isCompressed,omitempty"`
-	IsReusedFromCache bool   `json:"isReusedFromCache,omitempty"`
+// DirNode represents a folder in the hierarchy, aggregating its children's stats.
+//
+// O caminho completo não é guardado: Path() o deriva subindo por parent, do
+// mesmo jeito que FileNode.Path (ADR-0001). `parent` e `Name` são imutáveis
+// depois da criação do nó, então Path() dispensa lock.
+type DirNode struct {
+	parent *DirNode
+	Name   string
+
+	TotalSize           int64 // Total logical size
+	TotalAllocatedSize  int64 // Total physical allocated size
+	FileCount           int64
+	CompressedFileCount int64
+	SubDirCount         int64
+
+	IsSymlink  bool
+	LinkTarget string
+
+	Children map[string]*DirNode
+	Files    []*FileNode
+	mu       sync.RWMutex
 }
 
-// DirNode represents a folder in the hierarchy, aggregating its children's stats.
-type DirNode struct {
-	Path                string              `json:"path"`
-	Name                string              `json:"name"`
-	TotalSize           int64               `json:"totalSize"`          // Total logical size
-	TotalAllocatedSize  int64               `json:"totalAllocatedSize"` // Total physical allocated size
-	FileCount           int64               `json:"fileCount"`
-	CompressedFileCount int64               `json:"compressedFileCount"`
-	SubDirCount         int64               `json:"subDirCount"`
-	ModTime             int64               `json:"modTime"`
-	CreateTime          int64               `json:"createTime"`
-	AccessTime          int64               `json:"accessTime"`
-	IsSymlink           bool                `json:"isSymlink,omitempty"`
-	LinkTarget          string              `json:"linkTarget,omitempty"`
-	Children            map[string]*DirNode `json:"children,omitempty"`
-	Files               []*FileNode         `json:"files,omitempty"`
-	mu                  sync.RWMutex
+// maxPathChain é o teto de níveis que Path() percorre sem alocar. A Fase 1 já
+// recusa caminhos com mais de MaxScanDepth níveis (skip.go).
+const maxPathChain = MaxScanDepth + 16
+
+// Path deriva o caminho completo da pasta a partir da cadeia de pais.
+func (node *DirNode) Path() string {
+	return node.appendPath("")
+}
+
+// joinChild deriva o caminho completo de um filho direto desta pasta.
+func (node *DirNode) joinChild(child string) string {
+	return node.appendPath(child)
+}
+
+// appendPath monta o caminho da pasta, opcionalmente com um elemento a mais no
+// fim. Usa filepath.Join para reproduzir exatamente o caminho que o código
+// antigo montava elemento a elemento.
+func (node *DirNode) appendPath(child string) string {
+	if node == nil {
+		return child
+	}
+
+	var buf [maxPathChain]string
+	chain := buf[:0]
+	for cur := node; cur != nil; cur = cur.parent {
+		if len(chain) == cap(chain) {
+			// Cadeia mais funda que o teto: cai para uma fatia no heap.
+			return node.appendPathSlow(child)
+		}
+		chain = append(chain, cur.Name)
+	}
+
+	// A cadeia foi colhida da folha para a raiz; inverte no lugar.
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	if child != "" {
+		chain = append(chain, child)
+	}
+	return filepath.Join(chain...)
+}
+
+func (node *DirNode) appendPathSlow(child string) string {
+	var chain []string
+	for cur := node; cur != nil; cur = cur.parent {
+		chain = append(chain, cur.Name)
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	if child != "" {
+		chain = append(chain, child)
+	}
+	return filepath.Join(chain...)
+}
+
+// joinPathElem junta uma pasta e um elemento simples, com a mesma semântica de
+// filepath.Join para nomes já limpos.
+func joinPathElem(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	if name == "" {
+		return dir
+	}
+	return filepath.Join(dir, name)
+}
+
+// setChildLocked registra um filho, criando o mapa na primeira vez. Pastas
+// folha — a maioria — nunca alocam o mapa (ADR-0001). O chamador segura o lock.
+func (node *DirNode) setChildLocked(name string, child *DirNode) {
+	if node.Children == nil {
+		node.Children = make(map[string]*DirNode, 1)
+	}
+	node.Children[name] = child
 }
 
 // DirSummary is a lightweight view of a directory for UI tree browsing.

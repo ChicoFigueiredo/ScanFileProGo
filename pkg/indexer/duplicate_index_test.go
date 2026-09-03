@@ -11,20 +11,20 @@ func TestDuplicateIndex_RebuildAndSorting(t *testing.T) {
 
 	files := []*scanner.FileNode{
 		// Group 1: 5GB ISO files (duplicated 3 times)
-		{Path: "C:\\Downloads\\ubuntu.iso", Name: "ubuntu.iso", Size: 5000000000, ModTime: 100, Hash: "xxh:1111"},
-		{Path: "D:\\ISOs\\ubuntu_backup.iso", Name: "ubuntu_backup.iso", Size: 5000000000, ModTime: 200, Hash: "xxh:1111"},
-		{Path: "E:\\ISOs\\ubuntu_copy.iso", Name: "ubuntu_copy.iso", Size: 5000000000, ModTime: 300, Hash: "xxh:1111"},
+		scanner.NewFileNodeAt("C:\\Downloads\\ubuntu.iso", scanner.FileMeta{Name: "ubuntu.iso", Size: 5000000000, ModTime: 100, Hash: "xxh:1111"}),
+		scanner.NewFileNodeAt("D:\\ISOs\\ubuntu_backup.iso", scanner.FileMeta{Name: "ubuntu_backup.iso", Size: 5000000000, ModTime: 200, Hash: "xxh:1111"}),
+		scanner.NewFileNodeAt("E:\\ISOs\\ubuntu_copy.iso", scanner.FileMeta{Name: "ubuntu_copy.iso", Size: 5000000000, ModTime: 300, Hash: "xxh:1111"}),
 
 		// Group 2: 10MB Video files (duplicated 2 times)
-		{Path: "C:\\Videos\\clip.mp4", Name: "clip.mp4", Size: 10000000, ModTime: 150, Hash: "xxh:2222"},
-		{Path: "D:\\Backup\\clip_copy.mp4", Name: "clip_copy.mp4", Size: 10000000, ModTime: 250, Hash: "xxh:2222"},
+		scanner.NewFileNodeAt("C:\\Videos\\clip.mp4", scanner.FileMeta{Name: "clip.mp4", Size: 10000000, ModTime: 150, Hash: "xxh:2222"}),
+		scanner.NewFileNodeAt("D:\\Backup\\clip_copy.mp4", scanner.FileMeta{Name: "clip_copy.mp4", Size: 10000000, ModTime: 250, Hash: "xxh:2222"}),
 
 		// Unique file (should not be in duplicate index)
-		{Path: "C:\\Docs\\notes.txt", Name: "notes.txt", Size: 500, ModTime: 50, Hash: "xxh:3333"},
+		scanner.NewFileNodeAt("C:\\Docs\\notes.txt", scanner.FileMeta{Name: "notes.txt", Size: 500, ModTime: 50, Hash: "xxh:3333"}),
 
 		// Collision simulation: hypothetical identical hash "xxh:4444" but DIFFERENT sizes
-		{Path: "C:\\A\\fileA.bin", Name: "fileA.bin", Size: 1234, ModTime: 10, Hash: "xxh:4444"},
-		{Path: "C:\\B\\fileB.bin", Name: "fileB.bin", Size: 9999, ModTime: 20, Hash: "xxh:4444"},
+		scanner.NewFileNodeAt("C:\\A\\fileA.bin", scanner.FileMeta{Name: "fileA.bin", Size: 1234, ModTime: 10, Hash: "xxh:4444"}),
+		scanner.NewFileNodeAt("C:\\B\\fileB.bin", scanner.FileMeta{Name: "fileB.bin", Size: 9999, ModTime: 20, Hash: "xxh:4444"}),
 	}
 
 	idx.RebuildIndex(files)

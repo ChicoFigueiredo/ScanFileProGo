@@ -9,27 +9,38 @@ import (
 // (pkg/watcher). They keep the aggregated sizes and counters of every ancestor
 // consistent, so the UI never sees a stale total after a file changes on disk.
 
-// ReplaceFile replaces the node stored under f.Path (matched case-insensitively,
-// as Windows paths are) with f, or appends f when the path is unknown.
-// It returns the size of the previous node and whether a replacement happened,
-// so callers can compute an exact size delta for the event log.
+// ReplaceFile replaces the node stored under f.Path() (matched
+// case-insensitively, as Windows paths are) with f, or appends f when the path
+// is unknown. It returns the size of the previous node and whether a
+// replacement happened, so callers can compute an exact size delta for the
+// event log.
+//
+// A pasta é adotada: depois da chamada, f deriva o caminho dela (ADR-0001).
 func (tm *TreeManager) ReplaceFile(f *FileNode) (previousSize int64, replaced bool) {
-	if f == nil || f.Path == "" {
+	if f == nil || f.Name() == "" {
+		return 0, false
+	}
+	return tm.ReplaceFileAt(filepath.Dir(f.Path()), f)
+}
+
+// ReplaceFileAt é ReplaceFile com a pasta informada explicitamente.
+func (tm *TreeManager) ReplaceFileAt(dirPath string, f *FileNode) (previousSize int64, replaced bool) {
+	if f == nil || f.Name() == "" {
 		return 0, false
 	}
 
-	dirPath := filepath.Dir(f.Path)
 	dirNode := tm.EnsureDirNode(dirPath)
 	if dirNode == nil {
 		return 0, false
 	}
 
 	dirNode.mu.Lock()
+	f.parent = dirNode
 	for i, existing := range dirNode.Files {
 		if existing == nil {
 			continue
 		}
-		if existing.Path == f.Path || strings.EqualFold(existing.Path, f.Path) {
+		if existing.name == f.name || strings.EqualFold(existing.name, f.name) {
 			previousSize = existing.Size
 			dirNode.Files[i] = f
 			dirNode.TotalSize += f.Size - previousSize
@@ -64,13 +75,15 @@ func (tm *TreeManager) FindFile(filePath string) *FileNode {
 		return nil
 	}
 
+	base := filepath.Base(filePath)
+
 	dirNode.mu.RLock()
 	defer dirNode.mu.RUnlock()
 	for _, f := range dirNode.Files {
 		if f == nil {
 			continue
 		}
-		if f.Path == filePath || strings.EqualFold(f.Path, filePath) {
+		if f.name == base || strings.EqualFold(f.name, base) {
 			return f
 		}
 	}

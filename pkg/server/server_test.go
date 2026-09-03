@@ -13,13 +13,7 @@ import (
 func seedTree(t *testing.T, app *AppServer, name string) {
 	t.Helper()
 	dir := filepath.Join(tempDir(t), "raiz")
-	app.Tree.AddFile(&scanner.FileNode{
-		Path:      filepath.Join(dir, name),
-		Name:      name,
-		Size:      1024,
-		Extension: ".bin",
-		ModTime:   1700000000,
-	})
+	app.Tree.AddFile(scanner.NewFileNodeAt(filepath.Join(dir, name), scanner.FileMeta{Name: name, Size: 1024, Extension: ".bin", ModTime: 1700000000}))
 }
 
 func TestAutoSaveDuringScanRespectsInterval(t *testing.T) {

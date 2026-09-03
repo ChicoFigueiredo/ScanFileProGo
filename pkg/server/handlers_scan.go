@@ -510,7 +510,7 @@ func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
 		rootSummaries := make([]*scanner.DirSummary, 0)
 		roots := s.Tree.GetRootsSnapshot()
 		for _, rNode := range roots {
-			summary := s.Tree.GetDirSummary(rNode.Path, depth, scanner.DefaultSummaryMaxFiles)
+			summary := s.Tree.GetDirSummary(rNode.Path(), depth, scanner.DefaultSummaryMaxFiles)
 			if summary != nil {
 				rootSummaries = append(rootSummaries, summary)
 			}

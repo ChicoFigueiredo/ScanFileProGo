@@ -16,12 +16,7 @@ func writeFile(t *testing.T, path string, data []byte) *scanner.FileNode {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &scanner.FileNode{
-		Path:      path,
-		Name:      filepath.Base(path),
-		Size:      int64(len(data)),
-		Extension: filepath.Ext(path),
-	}
+	return scanner.NewFileNodeAt(path, scanner.FileMeta{Name: filepath.Base(path), Size: int64(len(data)), Extension: filepath.Ext(path)})
 }
 
 func TestComputeQuickHash_HeaderAndFooterOnly(t *testing.T) {
@@ -126,16 +121,16 @@ func TestRunHashing_PrehashAvoidsFullRead(t *testing.T) {
 		t.Fatalf("RunHashing: %v", err)
 	}
 
-	if fHead.Hash != "" {
-		t.Errorf("head.bin não deveria receber Hash Completo, obtive %q", fHead.Hash)
+	if fHead.Hash() != "" {
+		t.Errorf("head.bin não deveria receber Hash Completo, obtive %q", fHead.Hash())
 	}
-	if fHead.QuickHash == 0 {
+	if fHead.QuickHash() == 0 {
 		t.Error("head.bin deveria ter Pré-hash gravado")
 	}
-	if fBase.Hash == "" || fMid.Hash == "" {
-		t.Fatalf("base e mid deveriam ter Hash Completo: %q / %q", fBase.Hash, fMid.Hash)
+	if fBase.Hash() == "" || fMid.Hash() == "" {
+		t.Fatalf("base e mid deveriam ter Hash Completo: %q / %q", fBase.Hash(), fMid.Hash())
 	}
-	if fBase.Hash == fMid.Hash {
+	if fBase.Hash() == fMid.Hash() {
 		t.Error("Hash Completo deveria detectar a diferença no meio")
 	}
 
@@ -169,10 +164,10 @@ func TestRunHashing_SmallFilesSkipPrehash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if a.Hash == "" || b.Hash == "" {
+	if a.Hash() == "" || b.Hash() == "" {
 		t.Fatal("arquivos pequenos deveriam ir direto ao Hash Completo")
 	}
-	if a.Hash != b.Hash {
+	if a.Hash() != b.Hash() {
 		t.Error("arquivos idênticos deveriam ter o mesmo hash")
 	}
 	if got := h.PrehashCount(); got != 0 {
@@ -192,11 +187,11 @@ func TestRunHashing_HashAllFilesIgnoresPrehash(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if a.Hash == "" {
+	if a.Hash() == "" {
 		t.Fatal("HashAllFiles deveria hashear até arquivos sem par de tamanho")
 	}
-	if scanner.HashAlgorithmOf(a.Hash) != scanner.HashBlake3 {
-		t.Errorf("hash %q não tem prefixo blake3", a.Hash)
+	if scanner.HashAlgorithmOf(a.Hash()) != scanner.HashBlake3 {
+		t.Errorf("hash %q não tem prefixo blake3", a.Hash())
 	}
 	if got := h.PrehashCount(); got != 0 {
 		t.Errorf("HashAllFiles não deveria usar Pré-hash, PrehashCount = %d", got)
@@ -210,8 +205,9 @@ func TestRunHashing_RehashesWhenAlgorithmChanged(t *testing.T) {
 	data := bytes.Repeat([]byte("q"), 4096)
 	a := writeFile(t, filepath.Join(dir, "a.bin"), data)
 	b := writeFile(t, filepath.Join(dir, "b.bin"), data)
-	a.Hash = "xxh64:deadbeefdeadbeef" // reaproveitado de uma varredura em xxhash
-	b.Hash = "xxh64:deadbeefdeadbeef"
+	// Reaproveitado de uma varredura em xxhash.
+	a.SetHash("xxh64:deadbeefdeadbeef")
+	b.SetHash("xxh64:deadbeefdeadbeef")
 
 	h := NewHasher()
 	if err := h.RunHashing(context.Background(), []*scanner.FileNode{a, b}, ComputeHashOptions{
@@ -222,8 +218,8 @@ func TestRunHashing_RehashesWhenAlgorithmChanged(t *testing.T) {
 	}
 
 	for _, f := range []*scanner.FileNode{a, b} {
-		if scanner.HashAlgorithmOf(f.Hash) != scanner.HashSHA256 {
-			t.Errorf("%s manteve hash de outro algoritmo: %q", f.Name, f.Hash)
+		if scanner.HashAlgorithmOf(f.Hash()) != scanner.HashSHA256 {
+			t.Errorf("%s manteve hash de outro algoritmo: %q", f.Name(), f.Hash())
 		}
 	}
 }
@@ -234,8 +230,8 @@ func TestRunHashing_KeepsReusedHashOfSameAlgorithm(t *testing.T) {
 	a := writeFile(t, filepath.Join(dir, "a.bin"), data)
 	b := writeFile(t, filepath.Join(dir, "b.bin"), data)
 	reused := "xxh64:deadbeefdeadbeef"
-	a.Hash = reused
-	b.Hash = reused
+	a.SetHash(reused)
+	b.SetHash(reused)
 
 	h := NewHasher()
 	if err := h.RunHashing(context.Background(), []*scanner.FileNode{a, b}, ComputeHashOptions{
@@ -244,8 +240,8 @@ func TestRunHashing_KeepsReusedHashOfSameAlgorithm(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if a.Hash != reused || b.Hash != reused {
-		t.Errorf("hash do mesmo algoritmo deveria ser reaproveitado: %q / %q", a.Hash, b.Hash)
+	if a.Hash() != reused || b.Hash() != reused {
+		t.Errorf("hash do mesmo algoritmo deveria ser reaproveitado: %q / %q", a.Hash(), b.Hash())
 	}
 	if got := h.BytesHashed(); got != 2*4096 {
 		t.Errorf("BytesHashed = %d, quer %d (contabilizados como reaproveitados)", got, 2*4096)

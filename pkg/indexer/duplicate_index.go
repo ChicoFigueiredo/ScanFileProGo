@@ -85,17 +85,17 @@ func (idx *DuplicateIndex) RebuildIndex(files []*scanner.FileNode) {
 
 	// Step 1: Bucket files by composite key (hash + size)
 	for _, f := range files {
-		if f == nil || f.Hash == "" {
+		if f == nil || f.Hash() == "" {
 			continue
 		}
 
 		// Collision safety: composite key ensures different sized files with hypothetical same hash are isolated
-		key := groupKey(f.Hash, f.Size)
+		key := groupKey(f.Hash(), f.Size)
 		grp, exists := idx.groups[key]
 		if !exists {
 			grp = &DuplicateGroup{
 				ID:         key,
-				Hash:       f.Hash,
+				Hash:       f.Hash(),
 				FileSize:   f.Size,
 				Confidence: ConfidenceHash,
 				Files:      make([]*scanner.FileNode, 0, 2),
@@ -107,7 +107,7 @@ func (idx *DuplicateIndex) RebuildIndex(files []*scanner.FileNode) {
 		if grp.FileCount > 1 {
 			grp.WastedBytes = int64(grp.FileCount-1) * grp.FileSize
 		}
-		idx.pathKeys[normalizePath(f.Path)] = key
+		idx.pathKeys[normalizePath(f.Path())] = key
 	}
 
 	// Step 2: Park groups with a single file. They are not duplicates today, but
@@ -120,7 +120,7 @@ func (idx *DuplicateIndex) RebuildIndex(files []*scanner.FileNode) {
 		}
 		// Sort files in group by ModTime ascending (oldest first)
 		sort.Slice(grp.Files, func(i, j int) bool {
-			return grp.Files[i].ModTime < grp.Files[j].ModTime
+			return grp.Files[i].ModTime() < grp.Files[j].ModTime()
 		})
 	}
 }
@@ -129,20 +129,20 @@ func (idx *DuplicateIndex) RebuildIndex(files []*scanner.FileNode) {
 // WastedBytes consistent. A file that arrives without a hash (locked, or not
 // hashed yet) leaves the index instead of posing as a duplicate.
 func (idx *DuplicateIndex) UpsertFile(f *scanner.FileNode) {
-	if f == nil || f.Path == "" {
+	if f == nil || f.Path() == "" {
 		return
 	}
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	idx.removeLocked(f.Path)
-	if f.Hash == "" {
+	idx.removeLocked(f.Path())
+	if f.Hash() == "" {
 		return
 	}
 
-	norm := normalizePath(f.Path)
-	key := groupKey(f.Hash, f.Size)
+	norm := normalizePath(f.Path())
+	key := groupKey(f.Hash(), f.Size)
 
 	if grp, exists := idx.groups[key]; exists {
 		grp.Files = append(grp.Files, f)
@@ -157,7 +157,7 @@ func (idx *DuplicateIndex) UpsertFile(f *scanner.FileNode) {
 		delete(idx.singles, key)
 		grp := &DuplicateGroup{
 			ID:         key,
-			Hash:       f.Hash,
+			Hash:       f.Hash(),
 			FileSize:   f.Size,
 			Confidence: ConfidenceHash,
 			Files:      []*scanner.FileNode{other, f},
@@ -176,7 +176,7 @@ func (idx *DuplicateIndex) UpsertFile(f *scanner.FileNode) {
 
 func sortByModTime(files []*scanner.FileNode) {
 	sort.Slice(files, func(i, j int) bool {
-		return files[i].ModTime < files[j].ModTime
+		return files[i].ModTime() < files[j].ModTime()
 	})
 }
 
@@ -193,7 +193,7 @@ func (idx *DuplicateIndex) removeLocked(filePath string) bool {
 	if grp, exists := idx.groups[key]; exists {
 		remaining := make([]*scanner.FileNode, 0, len(grp.Files))
 		for _, f := range grp.Files {
-			if f == nil || normalizePath(f.Path) == norm {
+			if f == nil || normalizePath(f.Path()) == norm {
 				continue
 			}
 			remaining = append(remaining, f)
@@ -212,7 +212,7 @@ func (idx *DuplicateIndex) removeLocked(filePath string) bool {
 		return true
 	}
 
-	if single, exists := idx.singles[key]; exists && single != nil && normalizePath(single.Path) == norm {
+	if single, exists := idx.singles[key]; exists && single != nil && normalizePath(single.Path()) == norm {
 		delete(idx.singles, key)
 	}
 	return true
@@ -276,8 +276,8 @@ func (idx *DuplicateIndex) Query(filter QueryFilter) QueryResult {
 			matches = true
 		} else {
 			for _, f := range grp.Files {
-				extMatch := extLower == "" || strings.EqualFold(f.Extension, extLower)
-				searchMatch := searchLower == "" || strings.Contains(strings.ToLower(f.Path), searchLower)
+				extMatch := extLower == "" || strings.EqualFold(f.Extension(), extLower)
+				searchMatch := searchLower == "" || strings.Contains(strings.ToLower(f.Path()), searchLower)
 				if extMatch && searchMatch {
 					matches = true
 					break
@@ -305,7 +305,7 @@ func (idx *DuplicateIndex) Query(filter QueryFilter) QueryResult {
 	case "name_asc":
 		sort.Slice(resultList, func(i, j int) bool {
 			if len(resultList[i].Files) > 0 && len(resultList[j].Files) > 0 {
-				return resultList[i].Files[0].Name < resultList[j].Files[0].Name
+				return resultList[i].Files[0].Name() < resultList[j].Files[0].Name()
 			}
 			return false
 		})

@@ -35,11 +35,11 @@ func main() {
 	tm.GetOrCreateRoot("C:\\")
 
 	files := []*scanner.FileNode{
-		{Path: `C:\legacy\readme.txt`, Name: "readme.txt", Size: 500, AllocatedSize: 4096, ModTime: 1700000000, CreateTime: 1699000000, AccessTime: 1700000500, Hash: "xxh64:0000000000000001", QuickHash: 11, Extension: ".txt"},
-		{Path: `C:\legacy\docs\manual.pdf`, Name: "manual.pdf", Size: 8000, AllocatedSize: 8192, ModTime: 1700000001, CreateTime: 1699000001, AccessTime: 1700000501, Hash: "xxh64:0000000000000002", QuickHash: 22, Extension: ".pdf"},
-		{Path: `C:\legacy\docs\notas.txt`, Name: "notas.txt", Size: 12000, AllocatedSize: 12288, ModTime: 1700000002, CreateTime: 1699000002, AccessTime: 1700000502, Hash: "xxh64:0000000000000003", QuickHash: 33, Extension: ".txt"},
-		{Path: `C:\legacy\media\video.mp4`, Name: "video.mp4", Size: 40000, AllocatedSize: 40960, ModTime: 1700000003, CreateTime: 1699000003, AccessTime: 1700000503, Hash: "xxh64:0000000000000004", QuickHash: 44, Extension: ".mp4"},
-		{Path: `C:\legacy\media\capa.png`, Name: "capa.png", Size: 8000, AllocatedSize: 8192, ModTime: 1700000004, CreateTime: 1699000004, AccessTime: 1700000504, Hash: "xxh64:0000000000000005", QuickHash: 55, Extension: ".png"},
+		scanner.NewFileNodeAt(`C:\legacy\readme.txt`, scanner.FileMeta{Name: "readme.txt", Size: 500, AllocatedSize: 4096, ModTime: 1700000000, CreateTime: 1699000000, AccessTime: 1700000500, Hash: "xxh64:0000000000000001", QuickHash: 11, Extension: ".txt"}),
+		scanner.NewFileNodeAt(`C:\legacy\docs\manual.pdf`, scanner.FileMeta{Name: "manual.pdf", Size: 8000, AllocatedSize: 8192, ModTime: 1700000001, CreateTime: 1699000001, AccessTime: 1700000501, Hash: "xxh64:0000000000000002", QuickHash: 22, Extension: ".pdf"}),
+		scanner.NewFileNodeAt(`C:\legacy\docs\notas.txt`, scanner.FileMeta{Name: "notas.txt", Size: 12000, AllocatedSize: 12288, ModTime: 1700000002, CreateTime: 1699000002, AccessTime: 1700000502, Hash: "xxh64:0000000000000003", QuickHash: 33, Extension: ".txt"}),
+		scanner.NewFileNodeAt(`C:\legacy\media\video.mp4`, scanner.FileMeta{Name: "video.mp4", Size: 40000, AllocatedSize: 40960, ModTime: 1700000003, CreateTime: 1699000003, AccessTime: 1700000503, Hash: "xxh64:0000000000000004", QuickHash: 44, Extension: ".mp4"}),
+		scanner.NewFileNodeAt(`C:\legacy\media\capa.png`, scanner.FileMeta{Name: "capa.png", Size: 8000, AllocatedSize: 8192, ModTime: 1700000004, CreateTime: 1699000004, AccessTime: 1700000504, Hash: "xxh64:0000000000000005", QuickHash: 55, Extension: ".png"}),
 	}
 	for _, f := range files {
 		tm.AddFile(f)

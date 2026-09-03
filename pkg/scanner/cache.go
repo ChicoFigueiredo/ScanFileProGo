@@ -218,9 +218,12 @@ func writeSnapshotStream(tm *TreeManager, roots []string, config ScanConfig, w *
 	var writeErr error
 	first := true
 	for _, r := range tm.GetRootsSnapshot() {
-		walkDirs(r, func(_ *DirNode, files []*FileNode) bool {
+		walkDirs(r, func(node *DirNode, files []*FileNode) bool {
+			// O caminho da pasta é derivado uma vez só; cada arquivo apenas o
+			// completa com o próprio nome (ADR-0001).
+			dirPath := node.Path()
 			for _, f := range files {
-				data, err := json.Marshal(f)
+				data, err := json.Marshal(f.jsonView(dirPath))
 				if err != nil {
 					writeErr = err
 					return false
@@ -254,10 +257,7 @@ func writeSnapshotStream(tm *TreeManager, roots []string, config ScanConfig, w *
 	first = true
 	for _, r := range tm.GetRootsSnapshot() {
 		walkDirs(r, func(node *DirNode, _ []*FileNode) bool {
-			node.mu.RLock()
-			path := node.Path
-			node.mu.RUnlock()
-			data, err := json.Marshal(path)
+			data, err := json.Marshal(node.Path())
 			if err != nil {
 				writeErr = err
 				return false
@@ -486,8 +486,8 @@ func ImportCacheStream(r io.Reader, onProgress CacheProgressFunc) (*TreeManager,
 			}
 		case "files":
 			count := 0
-			if err := streamFileArray(dec, func(f *FileNode) {
-				inserter.add(f)
+			if err := streamFileArray(dec, func(dirPath string, f *FileNode) {
+				inserter.add(dirPath, f)
 				count++
 				if onProgress != nil && count%250_000 == 0 {
 					onProgress("Mapeando arquivos em memória...", 65, fmt.Sprintf("%d arquivos carregados", count))
@@ -550,7 +550,11 @@ func streamStringArray(dec *json.Decoder, fn func(string)) error {
 }
 
 // streamFileArray consome um array de FileNode elemento a elemento.
-func streamFileArray(dec *json.Decoder, fn func(*FileNode)) error {
+//
+// A decodificação passa pela visão plana (fileNodeJSON) em vez de FileNode:
+// assim o caminho lido do Snapshot vira a pasta do nó direto, sem construir uma
+// pasta sintética por arquivo.
+func streamFileArray(dec *json.Decoder, fn func(dirPath string, f *FileNode)) error {
 	tok, err := dec.Token()
 	if err != nil {
 		return err
@@ -562,19 +566,39 @@ func streamFileArray(dec *json.Decoder, fn func(*FileNode)) error {
 	if !ok || delim != '[' {
 		return fmt.Errorf("esperava um array de arquivos")
 	}
+	var raw fileNodeJSON
 	for dec.More() {
-		f := &FileNode{}
-		if err := dec.Decode(f); err != nil {
+		raw = fileNodeJSON{}
+		if err := dec.Decode(&raw); err != nil {
 			return err
 		}
-		if f.Path == "" {
+		if raw.Path == "" {
 			continue
 		}
 		// Retrocompatibilidade: calcula AllocatedSize quando ausente.
-		if f.AllocatedSize == 0 && f.Size > 0 && !f.IsCompressed {
-			f.AllocatedSize = f.Size
+		if raw.AllocatedSize == 0 && raw.Size > 0 && !raw.IsCompressed {
+			raw.AllocatedSize = raw.Size
 		}
-		fn(f)
+		dir, base := filepath.Split(filepath.Clean(raw.Path))
+		if raw.Name == "" {
+			raw.Name = base
+		}
+		f := NewFileNode(FileMeta{
+			Name:              raw.Name,
+			Size:              raw.Size,
+			AllocatedSize:     raw.AllocatedSize,
+			ModTime:           raw.ModTime,
+			CreateTime:        raw.CreateTime,
+			AccessTime:        raw.AccessTime,
+			Hash:              raw.Hash,
+			QuickHash:         raw.QuickHash,
+			Extension:         raw.Extension,
+			IsSymlink:         raw.IsSymlink,
+			LinkTarget:        raw.LinkTarget,
+			IsCompressed:      raw.IsCompressed,
+			IsReusedFromCache: raw.IsReusedFromCache,
+		})
+		fn(filepath.Clean(dir), f)
 	}
 	_, err = dec.Token() // ']'
 	return err
@@ -594,13 +618,13 @@ func newTreeInserter(tm *TreeManager) *treeInserter {
 	return &treeInserter{tm: tm, batch: make([]*FileNode, 0, 1024)}
 }
 
-func (ti *treeInserter) add(f *FileNode) {
-	dir := filepath.Dir(f.Path)
-	if dir != ti.lastDir {
+func (ti *treeInserter) add(dir string, f *FileNode) {
+	if dir != ti.lastDir || ti.lastNode == nil {
 		ti.flush()
 		ti.lastDir = dir
 		ti.lastNode = ti.tm.EnsureDirNode(dir)
 	}
+	f.parent = ti.lastNode
 	ti.batch = append(ti.batch, f)
 }
 
@@ -651,10 +675,10 @@ func BuildQuickScanLookup(snapshot *CacheSnapshot) map[string]*FileNode {
 
 	lookup := make(map[string]*FileNode, len(snapshot.Files))
 	for _, f := range snapshot.Files {
-		if f == nil || f.Path == "" {
+		if f == nil || f.Name() == "" {
 			continue
 		}
-		normPath := strings.ToLower(filepath.Clean(f.Path))
+		normPath := strings.ToLower(filepath.Clean(f.Path()))
 		lookup[normPath] = f
 	}
 	return lookup
@@ -668,10 +692,10 @@ func BuildQuickScanLookupFromTree(tm *TreeManager) map[string]*FileNode {
 	}
 	lookup := make(map[string]*FileNode)
 	tm.IterateFiles(func(f *FileNode) bool {
-		if f == nil || f.Path == "" {
+		if f == nil || f.Name() == "" {
 			return true
 		}
-		lookup[strings.ToLower(filepath.Clean(f.Path))] = f
+		lookup[strings.ToLower(filepath.Clean(f.Path()))] = f
 		return true
 	})
 	return lookup

@@ -27,9 +27,9 @@ func buildAutosave(t *testing.T) (autosaveDir string, root string) {
 	now := time.Now().Unix()
 	// Dois arquivos com o mesmo hash formam um Grupo de Duplicados.
 	files := []*scanner.FileNode{
-		{Path: filepath.Join(root, "a.pdf"), Name: "a.pdf", Size: 2048, Extension: ".pdf", ModTime: now, Hash: "xxh64:aaaa"},
-		{Path: filepath.Join(sub, "b.pdf"), Name: "b.pdf", Size: 2048, Extension: ".pdf", ModTime: now, Hash: "xxh64:aaaa"},
-		{Path: filepath.Join(sub, "c.txt"), Name: "c.txt", Size: 10, Extension: ".txt", ModTime: now},
+		scanner.NewFileNodeAt(filepath.Join(root, "a.pdf"), scanner.FileMeta{Name: "a.pdf", Size: 2048, Extension: ".pdf", ModTime: now, Hash: "xxh64:aaaa"}),
+		scanner.NewFileNodeAt(filepath.Join(sub, "b.pdf"), scanner.FileMeta{Name: "b.pdf", Size: 2048, Extension: ".pdf", ModTime: now, Hash: "xxh64:aaaa"}),
+		scanner.NewFileNodeAt(filepath.Join(sub, "c.txt"), scanner.FileMeta{Name: "c.txt", Size: 10, Extension: ".txt", ModTime: now}),
 	}
 	for _, f := range files {
 		tm.AddFile(f)

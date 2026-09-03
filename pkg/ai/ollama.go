@@ -124,11 +124,11 @@ func (c *OllamaClient) ListInstalledModels(ctx context.Context) ([]string, strin
 
 // PullProgress represents progress chunks during model download.
 type PullProgress struct {
-	Status    string `json:"status"`
-	Digest    string `json:"digest,omitempty"`
-	Total     int64  `json:"total,omitempty"`
-	Completed int64  `json:"completed,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Status    string  `json:"status"`
+	Digest    string  `json:"digest,omitempty"`
+	Total     int64   `json:"total,omitempty"`
+	Completed int64   `json:"completed,omitempty"`
+	Error     string  `json:"error,omitempty"`
 	Percent   float64 `json:"percent,omitempty"`
 }
 
@@ -191,13 +191,13 @@ type OllamaChatRequest struct {
 
 // OllamaChatResponse schema from /api/chat.
 type OllamaChatResponse struct {
-	Model      string    `json:"model"`
-	CreatedAt  string    `json:"created_at"`
-	Message    Message   `json:"message"`
-	Done       bool      `json:"done"`
-	TotalDuration int64  `json:"total_duration,omitempty"`
-	PromptEvalCount int  `json:"prompt_eval_count,omitempty"`
-	EvalCount       int  `json:"eval_count,omitempty"`
+	Model           string  `json:"model"`
+	CreatedAt       string  `json:"created_at"`
+	Message         Message `json:"message"`
+	Done            bool    `json:"done"`
+	TotalDuration   int64   `json:"total_duration,omitempty"`
+	PromptEvalCount int     `json:"prompt_eval_count,omitempty"`
+	EvalCount       int     `json:"eval_count,omitempty"`
 }
 
 // Chat calls Ollama chat endpoint with tool definitions and returns the assistant message.

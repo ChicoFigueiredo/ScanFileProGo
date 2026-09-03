@@ -259,13 +259,7 @@ func TestFullScanReportsWorkerThreads(t *testing.T) {
 func fillDir(t *testing.T, app *AppServer, dir string, count int) {
 	t.Helper()
 	for i := 0; i < count; i++ {
-		app.Tree.AddFile(&scanner.FileNode{
-			Path:      filepath.Join(dir, fmt.Sprintf("f%04d.bin", i)),
-			Name:      fmt.Sprintf("f%04d.bin", i),
-			Size:      int64(i + 1),
-			Extension: ".bin",
-			ModTime:   int64(1700000000 + i),
-		})
+		app.Tree.AddFile(scanner.NewFileNodeAt(filepath.Join(dir, fmt.Sprintf("f%04d.bin", i)), scanner.FileMeta{Name: fmt.Sprintf("f%04d.bin", i), Size: int64(i + 1), Extension: ".bin", ModTime: int64(1700000000 + i)}))
 	}
 }
 
@@ -328,7 +322,7 @@ func TestTreeFilesPaginatesAndCapsAt500(t *testing.T) {
 
 	var byName TreeFilesPage
 	getJSON(t, ts, "/api/tree/files?path="+urlValue(dir)+"&limit=3&sortBy=name_asc", &byName)
-	if len(byName.Files) != 3 || byName.Files[0].Name != "f0000.bin" {
+	if len(byName.Files) != 3 || byName.Files[0].Name() != "f0000.bin" {
 		t.Errorf("ordenação por nome falhou: %+v", byName.Files)
 	}
 

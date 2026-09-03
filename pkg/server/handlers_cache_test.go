@@ -20,13 +20,7 @@ func buildSnapshotTree(t *testing.T, root string) *scanner.TreeManager {
 		if i > 0 {
 			name = filepath.Join(root, "sub", "b"+string(rune('0'+i))+".bin")
 		}
-		tm.AddFile(&scanner.FileNode{
-			Path:      name,
-			Name:      filepath.Base(name),
-			Size:      int64(100 * (i + 1)),
-			Extension: ".bin",
-			ModTime:   1700000000,
-		})
+		tm.AddFile(scanner.NewFileNodeAt(name, scanner.FileMeta{Name: filepath.Base(name), Size: int64(100 * (i + 1)), Extension: ".bin", ModTime: 1700000000}))
 	}
 	tm.ComputeAggregatedSizes()
 	return tm

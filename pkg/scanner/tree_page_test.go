@@ -21,13 +21,13 @@ func TestTreeManager_ChangeCounter(t *testing.T) {
 		t.Errorf("EnsureDirNode deveria avançar o contador (%d -> %d)", afterRoot, afterEnsure)
 	}
 
-	tm.AddFile(&FileNode{Path: `C:\a\b\f.txt`, Name: "f.txt", Size: 10})
+	tm.AddFile(NewFileNodeAt(`C:\a\b\f.txt`, FileMeta{Name: "f.txt", Size: 10}))
 	afterAdd := tm.ChangeCounter()
 	if afterAdd <= afterEnsure {
 		t.Errorf("AddFile deveria avançar o contador (%d -> %d)", afterEnsure, afterAdd)
 	}
 
-	tm.FastSetDir(`C:\a\c`, []*FileNode{{Path: `C:\a\c\g.txt`, Name: "g.txt", Size: 5}}, []string{"d"})
+	tm.FastSetDir(`C:\a\c`, []*FileNode{NewFileNodeAt(`C:\a\c\g.txt`, FileMeta{Name: "g.txt", Size: 5})}, []string{"d"})
 	afterFast := tm.ChangeCounter()
 	if afterFast <= afterAdd {
 		t.Errorf("FastSetDir deveria avançar o contador (%d -> %d)", afterAdd, afterFast)
@@ -60,11 +60,7 @@ func TestTreeManager_ChangeCounterIsConcurrencySafe(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				tm.AddFile(&FileNode{
-					Path: fmt.Sprintf(`C:\conc\w%d\f%d.txt`, w, i),
-					Name: fmt.Sprintf("f%d.txt", i),
-					Size: 1,
-				})
+				tm.AddFile(NewFileNodeAt(fmt.Sprintf(`C:\conc\w%d\f%d.txt`, w, i), FileMeta{Name: fmt.Sprintf("f%d.txt", i), Size: 1}))
 			}
 		}(w)
 	}
@@ -80,13 +76,7 @@ func buildPageTree(t *testing.T, n int) *TreeManager {
 	tm := NewTreeManager()
 	tm.GetOrCreateRoot(`C:\`)
 	for i := 0; i < n; i++ {
-		tm.AddFile(&FileNode{
-			Path:      fmt.Sprintf(`C:\dados\f%04d.bin`, i),
-			Name:      fmt.Sprintf("f%04d.bin", i),
-			Size:      int64(i + 1),
-			ModTime:   int64(1_700_000_000 + i),
-			Extension: ".bin",
-		})
+		tm.AddFile(NewFileNodeAt(fmt.Sprintf(`C:\dados\f%04d.bin`, i), FileMeta{Name: fmt.Sprintf("f%04d.bin", i), Size: int64(i + 1), ModTime: int64(1_700_000_000 + i), Extension: ".bin"}))
 	}
 	tm.ComputeAggregatedSizes()
 	return tm
@@ -114,14 +104,14 @@ func TestTreeManager_GetFilesPage(t *testing.T) {
 
 	// name_asc
 	_, byName := tm.GetFilesPage(`C:\dados`, 0, 3, "name_asc")
-	if byName[0].Name != "f0000.bin" || byName[2].Name != "f0002.bin" {
-		t.Errorf("ordenação name_asc errada: %v", []string{byName[0].Name, byName[1].Name, byName[2].Name})
+	if byName[0].Name() != "f0000.bin" || byName[2].Name() != "f0002.bin" {
+		t.Errorf("ordenação name_asc errada: %v", []string{byName[0].Name(), byName[1].Name(), byName[2].Name()})
 	}
 
 	// mod_desc
 	_, byMod := tm.GetFilesPage(`C:\dados`, 0, 2, "mod_desc")
-	if byMod[0].ModTime < byMod[1].ModTime {
-		t.Errorf("ordenação mod_desc errada: %d < %d", byMod[0].ModTime, byMod[1].ModTime)
+	if byMod[0].ModTime() < byMod[1].ModTime() {
+		t.Errorf("ordenação mod_desc errada: %d < %d", byMod[0].ModTime(), byMod[1].ModTime())
 	}
 
 	// Ordenação desconhecida cai em size_desc.
