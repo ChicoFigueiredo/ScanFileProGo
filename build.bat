@@ -33,6 +33,11 @@ goto :build
 echo     (ignorado: node ou ui\tests ausente)
 
 :build
+rem Os metadados do executavel (VERSIONINFO + manifesto) vem do
+rem rsrc_windows_amd64.syso versionado, que o go build embute sozinho. Este
+rem script nao regenera o recurso de proposito: gera-lo sem informar a versao
+rem gravaria 0.0.0.0 no binario. Quem atualiza a versao do recurso e o
+rem build.ps1, que le o numero do main.go, ou o CI, que usa o da release.
 echo [4/4] Compilando scanfile.exe...
 go build -ldflags="-s -w" -o scanfile.exe .
 if %ERRORLEVEL% neq 0 goto :fail_build

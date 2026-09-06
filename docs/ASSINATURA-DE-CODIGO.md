@@ -298,32 +298,88 @@ após "Compilar scanfile.exe com Injeção de Versão" e antes de "Empacotar Rel
 para que o ZIP e o checksum SHA-256 cubram o binário **já assinado**. A ordem
 importa: assinar depois de gerar o checksum invalida o checksum.
 
-## 8. Pendências no repositório antes de pedir o certificado
+## 8. O que já está pronto no repositório
 
-1. **Recurso VERSIONINFO e manifesto.** Sem custo e independente do certificado —
-   e **obrigatório** na rota SignPath, que exige nome de produto e versão
-   preenchidos em todo binário assinado.
-   Gerar um `.syso` com `go-winres` ou `goversioninfo`, preenchendo CompanyName,
-   ProductName, FileDescription, LegalCopyright, OriginalFilename e FileVersion
-   casada com a tag da release. No manifesto, `requestedExecutionLevel` em
-   `asInvoker` — nunca `requireAdministrator`: o app já eleva sob demanda, que é o
-   padrão correto e o mais bem visto pela heurística.
+Tudo o que dependia de código foi feito. O que falta é o que só você pode fazer,
+e está na seção 8.1.
 
-2. **Trocar o fallback `rundll32 url.dll,FileProtocolHandler`** por `ShellExecuteW`
-   com o verbo `open` (`main.go`). `rundll32` executando handler de URL é padrão
-   LOLBin catalogado; a API normal não pontua.
+1. **Recurso VERSIONINFO e manifesto — feito.** `winres/winres.json` descreve o
+   recurso e o `rsrc_windows_amd64.syso` versionado o embute em qualquer
+   `go build`, mesmo sem ferramenta instalada. O `build.ps1` (lendo o número do
+   `main.go`) e o CI (usando o número da release) regravam o recurso com
+   [`go-winres`](https://github.com/tc-hib/go-winres)
+   (`go install github.com/tc-hib/go-winres@latest`). Verificado no binário:
 
-3. **Página pública do projeto**, com informação sobre o autor e o produto. A
-   Certum exige URL de projeto open source publicamente verificável, e o Programa
-   de Allowlist da Kaspersky (gratuito) exige site ativo com informação da empresa
-   e endereço legal. Um README no GitHub provavelmente basta para a Certum; para a
-   Kaspersky, provavelmente não.
+   ```
+   CompanyName      : Chico Figueiredo
+   ProductName      : ScanFile Pro
+   FileDescription  : ScanFile Pro - analisador de espaco em disco para Windows
+   LegalCopyright   : Copyright (C) 2026 Chico Figueiredo. Licenca GPL-3.0.
+   OriginalFilename : scanfile.exe
+   FileVersion      : 0.2.0
+   ```
 
-4. **Licença OSI clara e visível** na raiz do repositório — é o que sustenta a
-   afirmação de que o projeto é open source. **Feito:** `LICENSE` traz a
-   GPL-3.0 completa (Q41), o `README.md` explica os termos, e `main.go` carrega o
-   aviso de copyright. O `--version` imprime o aviso legal exigido pela GPL para
-   um programa interativo que se anuncia.
+   No manifesto: `execution-level` em **as invoker** — nunca
+   `requireAdministrator`, porque o app já eleva sob demanda, que é o padrão
+   correto e o mais bem visto pela heurística —, `minimum-os` win10 e DPI
+   *per monitor v2*. O `long-path-aware` ficou **desligado** de propósito: ligar
+   muda o comportamento de caminho em tempo de execução e o `SHFileOperationW`
+   da Reciclagem continua preso ao MAX_PATH de qualquer jeito. É uma mudança que
+   merece teste próprio, não um efeito colateral desta.
+
+2. **Fallback `rundll32` removido — feito.** A Janela agora abre por
+   `ShellExecuteW` com o verbo `open` (`browser_windows.go`), a mesma API que o
+   Explorer usa. O comportamento visível é idêntico; o que muda é a reputação.
+   `TestWindowLauncherDoesNotSpawnLOLBins` impede a volta do padrão — vale
+   também para `cmd /c start`, `mshta` e `regsvr32`.
+
+3. **Política de assinatura publicada — feito.**
+   [`CODE-SIGNING-POLICY.md`](CODE-SIGNING-POLICY.md), em inglês porque quem lê é
+   a equipe de revisão da SignPath. Declara papéis, processo de build, aprovação,
+   medidas de segurança e canal de denúncia. Assume com todas as letras que o
+   projeto tem um mantenedor só, em vez de fingir uma separação de revisão que
+   não existe.
+
+4. **Licença OSI clara e visível — feito.** `LICENSE` traz a GPL-3.0 completa
+   (Q41), o `README.md` explica os termos, e `main.go` carrega o aviso de
+   copyright. O `--version` imprime o aviso legal exigido pela GPL para um
+   programa interativo que se anuncia.
+
+5. **Pipeline pronto para assinar — feito.** O `ci-cd.yml` tem os passos da
+   SignPath, **desligados enquanto o segredo não existir**: sem
+   `SIGNPATH_ORGANIZATION_ID` configurado, eles são pulados e a release sai como
+   sempre saiu. O passo de validação falha o build se o executável sair sem
+   metadados ou com versão de recurso diferente da versão da release.
+
+6. **Página pública do projeto — pendente e não é código.** A Certum exige URL de
+   projeto open source publicamente verificável; o Programa de Allowlist da
+   Kaspersky exige site ativo com informação e endereço legal. O README no GitHub
+   provavelmente basta para a Certum e para a SignPath; para a Kaspersky,
+   provavelmente não.
+
+### 8.1 O que só você pode fazer
+
+1. **Ligar MFA** na sua conta do GitHub e, depois da aprovação, na SignPath. A
+   política publicada afirma que isso está ativo — precisa estar mesmo.
+2. **Publicar o repositório e uma release.** A SignPath exige projeto ativamente
+   mantido, com releases existentes e funcionalidade documentada. Hoje a PR #1
+   ainda não foi mergeada. Mergear e publicar a primeira release é o que torna a
+   candidatura defensável.
+3. **Aplicar** em <https://signpath.org/>, indicando o repositório, a licença
+   GPL-3.0 e a política de assinatura. A avaliação leva de dias a semanas.
+4. **Configurar os segredos**, depois de aprovado, em Settings → Secrets and
+   variables → Actions:
+
+   | Tipo | Nome | Origem |
+   |---|---|---|
+   | Secret | `SIGNPATH_API_TOKEN` | token de API da SignPath |
+   | Secret | `SIGNPATH_ORGANIZATION_ID` | ID da organização na SignPath |
+   | Variable | `SIGNPATH_PROJECT_SLUG` | slug do projeto na SignPath |
+   | Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | slug da política de assinatura |
+
+   No instante em que `SIGNPATH_ORGANIZATION_ID` existir, a próxima release sai
+   assinada. Nada mais precisa ser editado.
+5. **Conferir a primeira release assinada** com a seção 9.
 
 ## 9. Depois de assinar
 
@@ -348,6 +404,12 @@ Kaspersky ativa, `go test ./pkg/indexer/` falha de forma reprodutível com
 ```
 scanfile/pkg/indexer.test: open ...\go-build...\b001\indexer.test.exe: Acesso negado.
 FAIL	scanfile/pkg/indexer [build failed]
+```
+
+ou, quando a mensagem vem mais explícita:
+
+```
+fork/exec ...\go-build...\b306\indexer.test.exe: O arquivo já está sendo usado por outro processo.
 ```
 
 O que apurei:

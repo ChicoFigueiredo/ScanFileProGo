@@ -47,6 +47,36 @@ func TestEdgeWindowArgsPointsToTheServerURL(t *testing.T) {
 	}
 }
 
+// TestWindowLauncherDoesNotSpawnLOLBins guarda uma decisão que é fácil de
+// reverter sem perceber, porque o comportamento visível é idêntico: abrir a
+// Janela não pode passar por rundll32 nem por cmd /c start. Os dois abrem a URL,
+// e os dois são padrões catalogados de abuso que a heurística de antivírus
+// pontua contra um binário sem assinatura. O caminho certo é ShellExecuteW
+// (ver browser_windows.go e docs/ASSINATURA-DE-CODIGO.md).
+func TestWindowLauncherDoesNotSpawnLOLBins(t *testing.T) {
+	proibidos := []string{"rundll32", "FileProtocolHandler", "cmd /c start", "mshta", "regsvr32"}
+
+	for _, arquivo := range []string{"main.go", "browser_windows.go", "browser_other.go"} {
+		fonte, err := os.ReadFile(arquivo)
+		if err != nil {
+			t.Fatalf("não foi possível ler %s: %v", arquivo, err)
+		}
+		for _, proibido := range proibidos {
+			// O comentário de browser_windows.go explica por que rundll32 saiu;
+			// citar o nome ali é documentação, não uso.
+			for _, linha := range strings.Split(string(fonte), "\n") {
+				corte := strings.TrimSpace(linha)
+				if strings.HasPrefix(corte, "//") {
+					continue
+				}
+				if strings.Contains(corte, proibido) {
+					t.Errorf("%s executa %q para abrir a Janela; use openURLNative (ShellExecuteW)", arquivo, proibido)
+				}
+			}
+		}
+	}
+}
+
 func TestFocusRunningInstanceIgnoresMissingAndStaleFiles(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 

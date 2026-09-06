@@ -60,13 +60,13 @@ try {
     }
 
     # 2. Analise estatica
-    Invoke-Step "[1/4] Executando analise estatica de codigo (go vet)..." { go vet ./... }
+    Invoke-Step "[1/5] Executando analise estatica de codigo (go vet)..." { go vet ./... }
 
     # 3. Testes automatizados
     if ($Race) {
-        Invoke-Step "[2/4] Executando testes automatizados com detector de corrida (-race)..." { go test -race ./... }
+        Invoke-Step "[2/5] Executando testes automatizados com detector de corrida (-race)..." { go test -race ./... }
     } else {
-        Invoke-Step "[2/4] Executando testes automatizados..." { go test ./... }
+        Invoke-Step "[2/5] Executando testes automatizados..." { go test ./... }
     }
 
     # 4. Testes da interface (opcionais: so se node e ui/tests existirem)
@@ -75,22 +75,49 @@ try {
     #    PowerShell nao expande curingas para comandos nativos -- quem faz o glob
     #    e o proprio Node.
     if ((Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $UiTestsDir)) {
-        Invoke-Step "[3/4] Executando testes da interface (node --test ui/tests)..." {
+        Invoke-Step "[3/5] Executando testes da interface (node --test ui/tests)..." {
             node --test "ui/tests/**/*.test.mjs"
         }
     } else {
-        Write-Host "[3/4] Testes da interface ignorados (node ou ui/tests ausente)." -ForegroundColor DarkGray
+        Write-Host "[3/5] Testes da interface ignorados (node ou ui/tests ausente)." -ForegroundColor DarkGray
     }
 
-    # 5. Compilacao (-s -w remove simbolos de depuracao: binario menor)
-    Write-Host "[4/4] Gerando executavel nativo (scanfile.exe)..." -ForegroundColor Green
+    # 5. Recursos do Windows: VERSIONINFO e manifesto.
+    #    O rsrc_windows_amd64.syso versionado no repositorio ja carrega os
+    #    metadados, entao a ausencia do go-winres nao quebra o build local --
+    #    so deixa a versao do recurso igual a do ultimo commit.
+    #    Instale com: go install github.com/tc-hib/go-winres@latest
+    $winres = Join-Path (go env GOPATH) "bin\go-winres.exe"
+    if (Test-Path -LiteralPath $winres) {
+        $ver = (Select-String -Path (Join-Path $RepoRoot "main.go") -Pattern 'Version = "([0-9.]+)"').Matches[0].Groups[1].Value
+        Write-Host "[4/5] Gerando recursos do Windows (VERSIONINFO + manifesto) v$ver..." -ForegroundColor Gray
+        & $winres make --in winres/winres.json --arch amd64 --file-version $ver --product-version $ver
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[X] Falha ao gerar os recursos do Windows." -ForegroundColor Red
+            exit $LASTEXITCODE
+        }
+    } else {
+        Write-Host "[4/5] go-winres ausente; usando o rsrc_windows_amd64.syso versionado." -ForegroundColor DarkGray
+    }
+
+    # 6. Compilacao (-s -w remove simbolos de depuracao: binario menor)
+    Write-Host "[5/5] Gerando executavel nativo (scanfile.exe)..." -ForegroundColor Green
     go build -ldflags="-s -w" -o scanfile.exe .
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[X] Erro durante a compilacao!" -ForegroundColor Red
         exit $LASTEXITCODE
     }
 
+    # 7. Os metadados do executavel nao sao enfeite: sem eles o binario e anonimo
+    #    para o Windows e para o antivirus, e a SignPath recusa assinar.
+    $info = (Get-Item -LiteralPath $ExePath).VersionInfo
+    if (-not $info.CompanyName -or -not $info.ProductName -or -not $info.FileVersion) {
+        Write-Host "[X] O executavel saiu sem VERSIONINFO. O rsrc_windows_amd64.syso foi perdido?" -ForegroundColor Red
+        exit 1
+    }
+
     $fileSize = (Get-Item -LiteralPath $ExePath).Length / 1MB
+    Write-Host ("    Metadados: {0} / {1} / v{2}" -f $info.CompanyName, $info.ProductName, $info.FileVersion) -ForegroundColor DarkGray
     Write-Host "=========================================================" -ForegroundColor Green
     Write-Host ("[+] Compilacao concluida com sucesso! -> scanfile.exe ({0:N2} MB)" -f $fileSize) -ForegroundColor Green
     Write-Host "=========================================================" -ForegroundColor Green

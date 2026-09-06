@@ -42,8 +42,11 @@ import (
 var embeddedUI embed.FS
 
 var (
-	// Version can be overwritten during build with -ldflags "-X main.Version=0.1.0"
-	Version = "0.1.0"
+	// Version can be overwritten during build with -ldflags "-X main.Version=0.2.0".
+	// Este padrão é a fonte da versão do recurso VERSIONINFO nos builds locais:
+	// build.ps1 lê daqui para gerar o .syso, de modo que o binário se anuncie e
+	// se identifique com o mesmo número.
+	Version = "0.2.0"
 	Commit  = "dev"
 	Date    = "now"
 )
@@ -302,7 +305,7 @@ func resolveStartupPort(flagPort int, handoff bool, info server.InstanceInfo) in
 // launchNativeWindow opens the application in a native Windows Edge App window or native browser.
 func launchNativeWindow(targetURL string) {
 	if runtime.GOOS != "windows" {
-		_ = exec.Command("xdg-open", targetURL).Start()
+		_ = openURLNative(targetURL)
 		return
 	}
 
@@ -314,9 +317,12 @@ func launchNativeWindow(targetURL string) {
 		}
 	}
 
-	// Fallback to rundll32 / default Windows browser
+	// Sem Edge, cai no navegador padrão pela API do shell (ver browser_windows.go).
 	log.Println("[*] Abrindo navegador padrão do sistema...")
-	_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL).Start()
+	if err := openURLNative(targetURL); err != nil {
+		log.Printf("[!] Não foi possível abrir o navegador padrão: %v\n", err)
+		log.Printf("[*] Abra manualmente: %s\n", targetURL)
+	}
 }
 
 // edgeExecutablePath localiza o msedge.exe instalado, ou "" se não houver.

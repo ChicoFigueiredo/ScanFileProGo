@@ -150,6 +150,10 @@ jobs:
     env:
       # Binário autocontido, sem dependência de runtime C.
       CGO_ENABLED: '0'
+      # Vazio enquanto o projeto não estiver aprovado na SignPath Foundation.
+      # Sendo vazio, os passos de assinatura são pulados e a release sai sem
+      # assinatura, como sempre saiu. Ver docs/ASSINATURA-DE-CODIGO.md.
+      SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
@@ -161,6 +165,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Gerar Recursos do Windows (VERSIONINFO + manifesto)
+        shell: pwsh
+        run: |
+          # A SignPath exige nome de produto e versão preenchidos em todo binário
+          # que assina, e o Windows precisa deles para o executável não ser
+          # anônimo. O .syso versionado no repositório é a rede de segurança;
+          # aqui ele é regravado com a versão exata desta release.
+          $ver = "${{ needs.version.outputs.version }}"
+          go install github.com/tc-hib/go-winres@latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $winres = Join-Path (go env GOPATH) 'bin\go-winres.exe'
+          & $winres make --in winres/winres.json --arch amd64 --file-version $ver --product-version $ver
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compilar scanfile.exe com Injeção de Versão
         shell: pwsh
@@ -177,6 +196,71 @@ jobs:
         shell: pwsh
         run: |
           .\scanfile.exe --version
+
+          # Metadados: sem eles o binário é anônimo para o Windows e para o
+          # antivírus, e a SignPath recusa assinar.
+          $ver = "${{ needs.version.outputs.version }}"
+          $info = (Get-Item scanfile.exe).VersionInfo
+          Write-Host "VERSIONINFO: $($info.CompanyName) / $($info.ProductName) / v$($info.FileVersion)"
+
+          $faltando = @()
+          if (-not $info.CompanyName)      { $faltando += 'CompanyName' }
+          if (-not $info.ProductName)      { $faltando += 'ProductName' }
+          if (-not $info.FileDescription)  { $faltando += 'FileDescription' }
+          if (-not $info.LegalCopyright)   { $faltando += 'LegalCopyright' }
+          if (-not $info.OriginalFilename) { $faltando += 'OriginalFilename' }
+          if ($faltando.Count -gt 0) {
+            Write-Host "::error::Executável sem os metadados obrigatórios: $($faltando -join ', ')"
+            exit 1
+          }
+
+          # A versão do recurso tem que casar com a da release, senão o binário
+          # se anuncia com um número e se identifica com outro.
+          $esperado = ($ver -split '-')[0]
+          if (-not $info.FileVersion.StartsWith($esperado)) {
+            Write-Host "::error::FileVersion do recurso ($($info.FileVersion)) nao casa com a versao da release ($esperado)"
+            exit 1
+          }
+
+      # ----- Assinatura de código (SignPath Foundation) -----
+      # Só roda quando os segredos existem. Enquanto o projeto não estiver
+      # aprovado, os três passos abaixo são pulados sem quebrar o pipeline.
+      - name: Enviar Binário Não Assinado como Artefato
+        if: env.SIGNPATH_ORGANIZATION_ID != ''
+        id: artefato-nao-assinado
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanfile-unsigned
+          path: scanfile.exe
+          retention-days: 1
+
+      - name: Assinar na SignPath Foundation
+        if: env.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.artefato-nao-assinado.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Conferir a Assinatura
+        if: env.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        run: |
+          # O binário assinado volta em signed/ e substitui o não assinado, de
+          # modo que o ZIP e o checksum cubram o que foi assinado. Assinar
+          # depois de gerar o checksum invalidaria o checksum.
+          Move-Item -Path signed/scanfile.exe -Destination scanfile.exe -Force
+
+          $sig = Get-AuthenticodeSignature .\scanfile.exe
+          Write-Host "Assinatura: $($sig.Status) - $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Host "::error::Binário voltou da SignPath com assinatura $($sig.Status)"
+            exit 1
+          }
 
       - name: Empacotar Release (ZIP + Checksum)
         shell: pwsh
