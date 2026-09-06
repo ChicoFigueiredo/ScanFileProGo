@@ -110,3 +110,12 @@ Máquina de referência: 128 GB RAM · AMD Ryzen 7 3700X (8 núcleos / 16 thread
 
 1. Etapa (a): relatório de avaliação priorizado (`docs/AVALIACAO.md`).
 2. Etapa (b): correções na ordem confirmada no relatório.
+
+## 12. Decisões posteriores — 5 de setembro de 2026
+
+Tomadas depois da entrega da implementação, ao tratar do falso positivo de antivírus e da assinatura do binário. O contexto completo está em [`ASSINATURA-DE-CODIGO.md`](ASSINATURA-DE-CODIGO.md).
+
+| # | Decisão |
+|---|---|
+| Q40 | **ScanFile é gratuito para sempre**: sem versão paga, sem distribuição comercial. Consequência direta: o certificado de assinatura é o **Certum Open Source Code Signing in the Cloud** (US$ 58, chave em HSM, sem cartão físico), que a Certum **revoga** se for usado para assinar software distribuído comercialmente. Se essa premissa mudar, o certificado tem de mudar junto — e a reputação acumulada de SmartScreen e KSN é perdida. |
+| Q41 | Licença **GPL-3.0**, substituindo a MIT decidida na Q15. Motivo: sendo um aplicativo de desktop, e não uma biblioteca, o copyleft não custa adoção, e impede que um concorrente feche o código e venda — cenário concreto num mercado com WizTree e TreeSize pagos. Como o titular do copyright é único, mantém aberta a porta do licenciamento duplo. Todas as dependências são MIT ou BSD-3-Clause, compatíveis. As versões publicadas até a v0.2.0 permanecem sob MIT; a GPL-3.0 vale das seguintes em diante. |

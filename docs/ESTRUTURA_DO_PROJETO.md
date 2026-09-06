@@ -136,7 +136,7 @@ ScanFile/
 ├── CONTEXT.md                       # glossário do domínio
 ├── go.mod                           # module scanfile · go 1.26.7
 ├── go.sum
-├── LICENSE                          # MIT
+├── LICENSE                          # GPL-3.0
 ├── main.go                          # flags, modo MCP, elevação, Janela, embed
 ├── main_test.go
 ├── README.md

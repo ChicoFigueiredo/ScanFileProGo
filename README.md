@@ -228,8 +228,18 @@ Os testes da interface rodam no Node porque `ui/js/core.js` é escrito sem ESM: 
 
 A máquina de referência do projeto tem 128 GB de RAM, 8 núcleos e 16 threads, e cerca de 20 TB em NTFS. Só o volume `C:` dela contém **2,96 milhões de arquivos e 534 mil pastas**, contagem obtida por uma Varredura Completa em 2 de setembro de 2026 e registrada em [`docs/AVALIACAO.md`](docs/AVALIACAO.md).
 
-A meta de escala do projeto é 50 milhões de itens nessa máquina. O caminho para chegar lá é o nó compacto em memória descrito em [`docs/adr/0001-no-compacto-em-memoria.md`](docs/adr/0001-no-compacto-em-memoria.md), ainda não implementado. Nenhum outro número de desempenho é afirmado aqui.
+A meta de escala do projeto é 50 milhões de itens nessa máquina. O caminho para chegar lá é o nó compacto em memória descrito em [`docs/adr/0001-no-compacto-em-memoria.md`](docs/adr/0001-no-compacto-em-memoria.md), já implementado: `BenchmarkTreeMemoryPerItem` mede o custo real e falha acima do teto de 150 bytes por item. Nenhum outro número de desempenho é afirmado aqui.
 
 ## Licença
 
-MIT. Veja [`LICENSE`](LICENSE).
+**GNU General Public License v3.0.** Veja [`LICENSE`](LICENSE).
+
+Copyright (C) 2026 Chico Figueiredo.
+
+O ScanFile Pro é software livre: você pode redistribuí-lo e/ou modificá-lo sob os termos da GPL versão 3, tal como publicada pela Free Software Foundation. Ele é distribuído na esperança de ser útil, mas **sem nenhuma garantia** — nem mesmo a garantia implícita de comercialização ou adequação a um propósito específico.
+
+Na prática: use à vontade, inclusive comercialmente. Se você distribuir uma versão modificada, o código dela precisa vir junto, sob a mesma licença.
+
+As versões publicadas até a v0.2.0 saíram sob licença MIT e continuam disponíveis sob aqueles termos; a mudança para GPL-3.0 vale das versões seguintes em diante.
+
+Todas as dependências são MIT ou BSD-3-Clause, compatíveis com a GPL-3.0.

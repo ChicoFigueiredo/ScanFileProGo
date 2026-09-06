@@ -1,3 +1,17 @@
+// ScanFile Pro — analisador de espaço em disco para Windows.
+// Copyright (C) 2026 Chico Figueiredo
+//
+// Este programa é software livre: você pode redistribuí-lo e/ou modificá-lo sob
+// os termos da GNU General Public License, tal como publicada pela Free Software
+// Foundation, na versão 3 da licença.
+//
+// Este programa é distribuído na esperança de ser útil, mas SEM NENHUMA GARANTIA;
+// nem mesmo a garantia implícita de COMERCIALIZAÇÃO ou de ADEQUAÇÃO A UM
+// PROPÓSITO ESPECÍFICO. Veja a GNU General Public License para mais detalhes.
+//
+// Você deve ter recebido uma cópia da GNU General Public License junto com este
+// programa. Se não, veja <https://www.gnu.org/licenses/>.
+
 package main
 
 import (
@@ -57,6 +71,11 @@ func main() {
 
 	if *flagVersion {
 		fmt.Printf("ScanFile Pro v%s (commit: %s, built: %s)\n", Version, Commit, Date)
+		// Aviso legal exigido pela GPL-3.0 para um programa interativo que se
+		// anuncia: quem recebe o binário precisa saber que pode estudá-lo,
+		// modificá-lo e redistribuí-lo.
+		fmt.Println("Copyright (C) 2026 Chico Figueiredo. Licença GPL-3.0: <https://www.gnu.org/licenses/gpl-3.0.html>")
+		fmt.Println("Software livre, sem nenhuma garantia. Você pode redistribuí-lo sob os termos da GPL-3.0.")
 		return
 	}
 
