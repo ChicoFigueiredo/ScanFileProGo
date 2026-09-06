@@ -1,7 +1,8 @@
 # Assinatura de código do ScanFile Pro
 
-Como obter um certificado de assinatura de código na Certum e usá-lo para assinar
-o `scanfile.exe`. Escrito para ser seguido de cima para baixo, uma vez.
+Como obter um certificado de assinatura de código — de graça na SignPath Foundation
+ou pago na Certum — e usá-lo para assinar o `scanfile.exe`. Escrito para ser
+seguido de cima para baixo, uma vez.
 
 ## 1. Por que isto existe
 
@@ -31,8 +32,59 @@ falta é identidade, não limpeza.
 
 ## 2. Qual certificado
 
-**Escolha: Certum Open Source Code Signing in the Cloud** — decidida na Q40, que
-fixa o ScanFile como gratuito para sempre.
+Duas rotas servem ao ScanFile, e a decisão da Q40 — gratuito para sempre —
+habilita as duas. Tente a gratuita primeiro.
+
+| | SignPath Foundation | Certum Open Source |
+|---|---|---|
+| Custo | **grátis** | a partir de US$ 58 |
+| Publicador exibido no Windows | `SignPath Foundation` | `Open Source Developer <seu nome>` |
+| Reputação inicial | herda a do certificado, já usado por muitos projetos | zero; acumula com o tempo |
+| Documentos pessoais | nenhum | documento com foto + conta de consumo |
+| Automação no CI | nativa, conector do GitHub | manual, ou runner próprio (seção 7) |
+| O que é verificado | que o binário saiu do **seu repositório** | que **você** é quem diz ser |
+| Depende de | aprovação do projeto | seu pagamento e seus documentos |
+| Licenciamento duplo | proibido | permitido |
+
+### 2.1 Rota gratuita: SignPath Foundation
+
+A SignPath Foundation assina código de projetos open source **sem cobrar**. O
+modelo é diferente do de uma CA comum: em vez de verificar a sua identidade
+pessoal, ela verifica que o binário foi construído a partir do seu repositório
+público e **avaliza isso com o nome dela**. Por consequência, o certificado é
+emitido para a *SignPath Foundation*, e é esse o publicador que o Windows mostra —
+não o seu nome.
+
+Isso tem uma vantagem que dinheiro não compra: **o certificado já tem reputação**.
+Um certificado Certum novo em folha começa do zero no SmartScreen e na KSN e leva
+meses de downloads para aquecer. O da SignPath já é usado por muitos projetos.
+
+Condições de elegibilidade:
+
+- licença **aprovada pela OSI, sem licenciamento duplo comercial** — a GPL-3.0 da
+  Q41 atende, e a Q40 (gratuito para sempre) também;
+- **sem componentes proprietários** (bibliotecas de sistema são permitidas, na
+  definição da GPL v3);
+- código público, e o time que assina precisa ser o mesmo que desenvolve e
+  **é dono do repositório**;
+- projeto **ativamente mantido, com releases já existentes** e funcionalidade
+  documentada na página de download;
+- **reputação verificável do projeto** — o ponto que mais pesa contra o ScanFile
+  hoje, que é novo e ainda tem a PR #1 sem merge;
+- os scripts de build e a configuração de CI passam por revisão de código deles;
+- obrigações do time: **MFA** na SignPath e no repositório, papéis definidos
+  (autor, revisor, aprovador) e uma **política de assinatura publicada**;
+- todo binário assinado precisa ter os metadados preenchidos (nome do produto,
+  versão) — é a pendência 1 da seção 8, que vira obrigatória nesta rota.
+
+Aplicação em <https://signpath.org/>, com avaliação de alguns dias a algumas
+semanas. Assinam EXE, MSI e outros formatos, com conector nativo de GitHub — o que
+resolve de graça o problema de automação da seção 7.
+
+**O risco desta rota é a recusa**, ou o pedido para voltar quando o projeto tiver
+tração. Se isso acontecer, siga para a 2.2 e reaplique mais tarde.
+
+### 2.2 Rota paga: Certum Open Source Code Signing in the Cloud
 
 | | |
 |---|---|
@@ -57,14 +109,34 @@ Se um dia a Q40 mudar e o ScanFile virar produto pago, o certificado certo passa
 ser o **Certum Code Signing in the Cloud** padrão (a partir de ~US$ 116) ou o **EV**
 (a partir de ~US$ 226). O EV é o único que dá reputação de SmartScreen imediata,
 sem período de aquecimento. Trocar de certificado **zera a reputação acumulada**,
-então é uma decisão de ida só.
+então é uma decisão de ida só. (A SignPath também deixa de servir nesse cenário: a
+proibição de licenciamento duplo comercial é condição de elegibilidade.)
 
 Existe também o produto com cartão criptográfico (a partir de US$ 29 se você já
 tiver cartão e leitora; o conjunto completo custa mais e o cartão não é
 reembolsável). **Não vale a pena:** a versão em nuvem custa pouco mais, evita
 hardware e é a única que dá para automatizar.
 
-### Validade encurtou
+As seções 3 a 6 descrevem esta rota. Se você for pela SignPath, pule para a 7.
+
+### 2.3 O que não serve
+
+**Let's Encrypt e o certbot não emitem certificado de assinatura de código.** A
+Let's Encrypt só emite certificado TLS validado por domínio: prova-se controle do
+domínio, e é isso. Assinatura de código exige EKU de Code Signing e, pelas
+Baseline Requirements do CA/Browser Forum, exige **validação de identidade** e
+**chave em hardware FIPS ou HSM**. Não existe equivalente automatizado e gratuito
+do certbot para código — a validação é feita por gente, não por desafio HTTP. É
+justamente por isso que a SignPath Foundation existe: alguém precisa pagar essa
+verificação, e no caso deles é uma fundação patrocinada.
+
+**Certificado autoassinado é gratuito e inútil aqui.** Ele não encadeia numa raiz
+confiável: o Windows continua mostrando "editor desconhecido" e a Kaspersky continua
+sem colocar o processo no grupo Confiável. Só faz sentido em ambiente administrado,
+com o certificado empurrado por GPO para o repositório de Editores Confiáveis das
+máquinas — o oposto de distribuição pública.
+
+### Validade encurtou (rota Certum)
 
 A partir de **1º de março de 2026** a validade máxima de um certificado de
 assinatura de código caiu de ~3 anos para **460 dias** (~15 meses). O aviso da
@@ -73,7 +145,7 @@ Confirme na compra o que se aplica ao open source. Consequência prática: plane
 renovar todo ano, e **renove sempre o mesmo certificado** — a reputação na KSN e no
 SmartScreen se acumula no certificado, não no binário.
 
-## 3. O que você precisa ter em mãos
+## 3. Rota Certum: o que você precisa ter em mãos
 
 A verificação de identidade aceita uma destas formas:
 
@@ -95,7 +167,7 @@ O item 2 é o que exige preparo do repositório — veja a seção 8.
 
 O envio mais rápido é pelo upload direto na conta da Certum Store.
 
-## 4. Pedido, passo a passo
+## 4. Rota Certum: pedido, passo a passo
 
 1. Criar conta em `certum.store` e comprar o **Open Source Code Signing in the Cloud**.
 2. Preencher o formulário do certificado com os dados da pessoa física.
@@ -103,7 +175,7 @@ O envio mais rápido é pelo upload direto na conta da Certum Store.
 4. Aguardar a verificação da Certum (identidade + existência do projeto).
 5. Receber o e-mail de ativação e ativar o certificado no SimplySign.
 
-## 5. Ativação do SimplySign
+## 5. Rota Certum: ativação do SimplySign
 
 1. Instalar o **SimplySign Mobile** no celular (Android ou iOS) — é ele que gera o
    token TOTP de 6 dígitos.
@@ -119,7 +191,7 @@ O envio mais rápido é pelo upload direto na conta da Certum Store.
 Para conferir: botão direito no ícone → **Gerenciar certificados → Lista de
 certificados**.
 
-## 6. Como assinar
+## 6. Rota Certum: como assinar
 
 ### Obter o thumbprint
 
@@ -188,7 +260,16 @@ Get-AuthenticodeSignature .\scanfile.exe | Format-List Status, SignerCertificate
 O manual da Certum documenta assinatura dupla SHA-1 + SHA-256 para compatibilidade
 com Windows 7. O ScanFile exige Windows 10 ou superior; SHA-1 hoje só atrapalha.
 
-## 7. Automação no CI — e por que ela não é direta
+## 7. Automação no CI
+
+**Pela SignPath, isto já vem resolvido.** A assinatura acontece na infraestrutura
+deles, disparada pelo conector de GitHub: o workflow envia o artefato, a plataforma
+confere que ele saiu do repositório, do branch e do build agent esperados
+(*origin verification*), assina e devolve. Nada de segredo de assinatura nos
+GitHub Secrets, e o registro de auditoria é automático. É o argumento técnico mais
+forte a favor dessa rota, além do preço.
+
+### Rota Certum — por que ela não é direta
 
 O SimplySign exige um **token TOTP gerado no celular** para abrir a sessão. Isso é,
 de propósito, hostil à automação: a chave privada só é liberada depois da
@@ -219,7 +300,9 @@ importa: assinar depois de gerar o checksum invalida o checksum.
 
 ## 8. Pendências no repositório antes de pedir o certificado
 
-1. **Recurso VERSIONINFO e manifesto.** Sem custo e independente do certificado.
+1. **Recurso VERSIONINFO e manifesto.** Sem custo e independente do certificado —
+   e **obrigatório** na rota SignPath, que exige nome de produto e versão
+   preenchidos em todo binário assinado.
    Gerar um `.syso` com `go-winres` ou `goversioninfo`, preenchendo CompanyName,
    ProductName, FileDescription, LegalCopyright, OriginalFilename e FileVersion
    casada com a tag da release. No manifesto, `requestedExecutionLevel` em
@@ -286,6 +369,9 @@ sozinho quando os binários passarem a ser assinados.
 
 ## Fontes
 
+- [SignPath Foundation](https://signpath.org/) e [condições para projetos open source](https://signpath.org/terms.html)
+- [SignPath — plataforma para a comunidade open source](https://signpath.io/solutions/open-source-community)
+- [CA/Browser Forum — Code Signing Baseline Requirements](https://cabforum.org/working-groups/code-signing/requirements/)
 - [Certum — Code Signing: documentos exigidos](https://support.certum.eu/en/code-signing-required-documents/)
 - [Certum Store — Open Source Code Signing in the Cloud](https://certum.store/open-source-code-signing-on-simplysign.html)
 - [Certum — Code Signing in the cloud: assinatura com signtool e jarsigner (PDF)](https://www.files.certum.eu/documents/manual_en/Signing_with_the_use_of_jarsigner_tool_and_signtool.pdf)
