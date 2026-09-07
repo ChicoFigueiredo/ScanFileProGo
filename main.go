@@ -42,11 +42,11 @@ import (
 var embeddedUI embed.FS
 
 var (
-	// Version can be overwritten during build with -ldflags "-X main.Version=0.2.0".
+	// Version can be overwritten during build with -ldflags "-X main.Version=0.4.0".
 	// Este padrão é a fonte da versão do recurso VERSIONINFO nos builds locais:
 	// build.ps1 lê daqui para gerar o .syso, de modo que o binário se anuncie e
 	// se identifique com o mesmo número.
-	Version = "0.2.0"
+	Version = "0.4.0"
 	Commit  = "dev"
 	Date    = "now"
 )

@@ -4,7 +4,7 @@
       "0409": {
         "identity": {
           "name": "ChicoFigueiredo.ScanFilePro",
-          "version": "0.2.0.0"
+          "version": "0.4.0.0"
         },
         "description": "ScanFile Pro - analisador de espaco em disco para Windows",
         "minimum-os": "win10",
@@ -28,22 +28,22 @@
     "#1": {
       "0000": {
         "fixed": {
-          "file_version": "0.2.0.0",
-          "product_version": "0.2.0.0"
+          "file_version": "0.4.0.0",
+          "product_version": "0.4.0.0"
         },
         "info": {
           "0409": {
             "Comments": "Software livre sob a GNU General Public License v3.0. Codigo em https://github.com/ChicoFigueiredo/ScanFileProGo",
             "CompanyName": "Chico Figueiredo",
             "FileDescription": "ScanFile Pro - analisador de espaco em disco para Windows",
-            "FileVersion": "0.2.0",
+            "FileVersion": "0.4.0",
             "InternalName": "scanfile",
             "LegalCopyright": "Copyright (C) 2026 Chico Figueiredo. Licenca GPL-3.0.",
             "LegalTrademarks": "",
             "OriginalFilename": "scanfile.exe",
             "PrivateBuild": "",
             "ProductName": "ScanFile Pro",
-            "ProductVersion": "0.2.0",
+            "ProductVersion": "0.4.0",
             "SpecialBuild": ""
           }
         }
