@@ -4,8 +4,27 @@ logs/
 
 # Temp files
 *.tmp
+ui/fonts/*.tmp
 ScanFile_Webview_Profile/
 
 *.exe
+*.exe~
 *.dll
 *.pdb
+
+# Artefatos de empacotamento gerados pelos pipelines
+dist/
+build.env
+
+# Saved scans & cache files
+saved_scans/
+*.sfz
+*.scanfile.gz
+# ...menos as fixtures versionadas dos testes de importacao de snapshot
+!pkg/scanner/testdata/*.scanfile.gz
+
+# Configuracao local do usuario (pode conter chave de API) - use scanfile_config.example.json como modelo
+scanfile_config.json
+
+# Modelos locais .gguf
+models/

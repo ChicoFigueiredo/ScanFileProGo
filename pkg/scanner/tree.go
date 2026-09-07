@@ -5,12 +5,50 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+)
+
+const (
+	// DefaultSummaryMaxFiles é o teto de arquivos diretos devolvidos por
+	// GetDirSummary para a pasta consultada (achado H6).
+	DefaultSummaryMaxFiles = 500
+
+	// DeepSummaryMaxFiles é o teto por subpasta nos níveis mais fundos.
+	DeepSummaryMaxFiles = 50
+
+	// MaxFilesPageLimit é o teto de itens por página de GetFilesPage.
+	MaxFilesPageLimit = 500
+)
+
+// Ordenações aceitas por GetFilesPage.
+const (
+	SortSizeDesc = "size_desc"
+	SortNameAsc  = "name_asc"
+	SortModDesc  = "mod_desc"
 )
 
 // TreeManager manages the in-memory hierarchy of drives, directories, and files.
 type TreeManager struct {
 	mu    sync.RWMutex
 	Roots map[string]*DirNode // Keyed by normalized root path e.g. "C:\\"
+
+	// changes avança a cada mudança estrutural da árvore. O Autosave com
+	// Monitoramento ativo só grava quando este contador andou.
+	changes atomic.Uint64
+}
+
+// ChangeCounter devolve quantas mudanças estruturais a árvore sofreu desde a
+// criação do TreeManager. Avança em AddFile, RemoveFile, FastSetDir e
+// EnsureDirNode (quando cria nós).
+func (tm *TreeManager) ChangeCounter() uint64 {
+	if tm == nil {
+		return 0
+	}
+	return tm.changes.Load()
+}
+
+func (tm *TreeManager) markChanged() {
+	tm.changes.Add(1)
 }
 
 // NewTreeManager initializes an empty tree.
@@ -23,8 +61,22 @@ func NewTreeManager() *TreeManager {
 // Reset clears the tree.
 func (tm *TreeManager) Reset() {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
 	tm.Roots = make(map[string]*DirNode)
+	tm.mu.Unlock()
+	tm.markChanged()
+}
+
+// GetRootsSnapshot returns a slice copy of the current root nodes under a brief read-lock (Safe from deadlocks).
+func (tm *TreeManager) GetRootsSnapshot() []*DirNode {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	roots := make([]*DirNode, 0, len(tm.Roots))
+	for _, r := range tm.Roots {
+		if r != nil {
+			roots = append(roots, r)
+		}
+	}
+	return roots
 }
 
 // RootsLock executes a callback with read lock over the roots map.
@@ -34,48 +86,81 @@ func (tm *TreeManager) RootsLock(fn func(roots map[string]*DirNode)) {
 	fn(tm.Roots)
 }
 
+// normalizeRootKey standardizes Windows and Unix root drive paths (e.g. "c:" or "c:\" -> "C:\").
+func normalizeRootKey(rootPath string) string {
+	clean := filepath.Clean(rootPath)
+	vol := filepath.VolumeName(clean)
+	if vol != "" {
+		vol = strings.ToUpper(vol)
+		return vol + "\\"
+	}
+	if len(clean) == 2 && clean[1] == ':' {
+		return strings.ToUpper(clean) + "\\"
+	}
+	if !strings.HasSuffix(clean, "\\") && !strings.HasSuffix(clean, "/") {
+		clean += string(filepath.Separator)
+	}
+	return clean
+}
+
+// GetTotalFileCount returns the aggregated total number of files across all roots.
+func (tm *TreeManager) GetTotalFileCount() int64 {
+	roots := tm.GetRootsSnapshot()
+	var total int64
+	for _, root := range roots {
+		if root != nil {
+			root.mu.RLock()
+			total += root.FileCount
+			root.mu.RUnlock()
+		}
+	}
+	return total
+}
+
 // GetOrCreateRoot returns or creates the root directory node for a drive/folder.
 func (tm *TreeManager) GetOrCreateRoot(rootPath string) *DirNode {
-	clean := filepath.Clean(rootPath)
-	if !strings.HasSuffix(clean, "\\") && len(clean) == 2 && clean[1] == ':' {
-		clean += "\\"
-	}
+	rootKey := normalizeRootKey(rootPath)
 
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	if root, exists := tm.Roots[clean]; exists {
-		return root
+	// Check exact or case-insensitive match
+	for k, r := range tm.Roots {
+		if strings.EqualFold(k, rootKey) || strings.EqualFold(k, rootPath) {
+			return r
+		}
 	}
 
-	root := &DirNode{
-		Path:     clean,
-		Name:     clean,
-		Children: make(map[string]*DirNode),
-		Files:    make([]*FileNode, 0),
-	}
-	tm.Roots[clean] = root
+	root := &DirNode{Name: rootKey}
+	tm.Roots[rootKey] = root
+	tm.changes.Add(1)
 	return root
 }
 
 // EnsureDirNode finds or creates a directory node along the path.
 func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 	clean := filepath.Clean(dirPath)
+	rootKey := normalizeRootKey(clean)
 	vol := filepath.VolumeName(clean)
-	rootKey := vol + "\\"
-	if vol == "" {
-		rootKey = clean
-	}
 
 	tm.mu.RLock()
 	root, exists := tm.Roots[rootKey]
+	if !exists {
+		for k, r := range tm.Roots {
+			if strings.EqualFold(k, rootKey) || strings.EqualFold(k, vol+"\\") {
+				root = r
+				exists = true
+				break
+			}
+		}
+	}
 	tm.mu.RUnlock()
 
 	if !exists {
 		root = tm.GetOrCreateRoot(rootKey)
 	}
 
-	if clean == rootKey || clean == vol {
+	if clean == rootKey || strings.EqualFold(clean, rootKey) || clean == vol || strings.EqualFold(clean, vol) {
 		return root
 	}
 
@@ -87,6 +172,7 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 
 	parts := strings.Split(rel, string(filepath.Separator))
 	curr := root
+	created := false
 
 	for _, part := range parts {
 		if part == "" || part == "." {
@@ -95,20 +181,28 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 		curr.mu.Lock()
 		child, ok := curr.Children[part]
 		if !ok {
-			childPath := filepath.Join(curr.Path, part)
-			child = &DirNode{
-				Path:     childPath,
-				Name:     part,
-				Children: make(map[string]*DirNode),
-				Files:    make([]*FileNode, 0),
+			// Case-insensitive check for existing children
+			for cName, cNode := range curr.Children {
+				if strings.EqualFold(cName, part) {
+					child = cNode
+					ok = true
+					break
+				}
 			}
-			curr.Children[part] = child
+		}
+		if !ok {
+			child = &DirNode{parent: curr, Name: part}
+			curr.setChildLocked(part, child)
 			curr.SubDirCount++
+			created = true
 		}
 		curr.mu.Unlock()
 		curr = child
 	}
 
+	if created {
+		tm.markChanged()
+	}
 	return curr
 }
 
@@ -116,20 +210,20 @@ func (tm *TreeManager) EnsureDirNode(dirPath string) *DirNode {
 func (tm *TreeManager) FastSetDir(dirPath string, files []*FileNode, subDirNames []string) *DirNode {
 	node := tm.EnsureDirNode(dirPath)
 	node.mu.Lock()
+	for _, f := range files {
+		if f != nil {
+			f.parent = node
+		}
+	}
 	node.Files = files
 	for _, sub := range subDirNames {
 		if _, ok := node.Children[sub]; !ok {
-			childPath := filepath.Join(dirPath, sub)
-			node.Children[sub] = &DirNode{
-				Path:     childPath,
-				Name:     sub,
-				Children: make(map[string]*DirNode),
-				Files:    make([]*FileNode, 0),
-			}
+			node.setChildLocked(sub, &DirNode{parent: node, Name: sub})
 		}
 	}
 	node.SubDirCount = int64(len(node.Children))
 	node.mu.Unlock()
+	tm.markChanged()
 	return node
 }
 
@@ -168,11 +262,11 @@ func computeNodeSize(node *DirNode) (totalSize int64, totalAllocated int64, file
 	for _, f := range node.Files {
 		directSize += f.Size
 		alloc := f.AllocatedSize
-		if alloc == 0 && f.Size > 0 && !f.IsCompressed {
+		if alloc == 0 && f.Size > 0 && !f.IsCompressed() {
 			alloc = f.Size
 		}
 		directAllocated += alloc
-		if f.IsCompressed {
+		if f.IsCompressed() {
 			directCompressed++
 		}
 	}
@@ -208,17 +302,33 @@ func computeNodeSize(node *DirNode) (totalSize int64, totalAllocated int64, file
 }
 
 // AddFile inserts a file into the tree and updates parent directories.
+//
+// O nó precisa saber onde mora: use NewFileNodeAt (que já monta a pasta a
+// partir do caminho completo) ou AddFileAt, que recebe a pasta explicitamente.
 func (tm *TreeManager) AddFile(file *FileNode) {
-	dirPath := filepath.Dir(file.Path)
+	if file == nil {
+		return
+	}
+	tm.AddFileAt(filepath.Dir(file.Path()), file)
+}
+
+// AddFileAt insere um arquivo sob dirPath, adotando o nó: a pasta passa a ser o
+// pai dele e o caminho completo passa a ser derivado dali.
+func (tm *TreeManager) AddFileAt(dirPath string, file *FileNode) {
+	if file == nil {
+		return
+	}
 	dirNode := tm.EnsureDirNode(dirPath)
 
 	dirNode.mu.Lock()
+	file.parent = dirNode
 	dirNode.Files = append(dirNode.Files, file)
 	dirNode.FileCount++
 	dirNode.TotalSize += file.Size
 	dirNode.mu.Unlock()
 
 	tm.bubbleUpSize(dirPath, file.Size, 1)
+	tm.markChanged()
 }
 
 // bubbleUpSize adds size and file count to all ancestors of dirPath.
@@ -245,22 +355,33 @@ func (tm *TreeManager) bubbleUpSize(dirPath string, sizeDelta int64, fileCountDe
 
 // FindDir returns the DirNode at path, or nil if not found.
 func (tm *TreeManager) FindDir(dirPath string) *DirNode {
+	if dirPath == "" || dirPath == "." || dirPath == "Meus Discos" {
+		return nil
+	}
+
 	clean := filepath.Clean(dirPath)
 	vol := filepath.VolumeName(clean)
-	rootKey := vol + "\\"
-	if vol == "" {
-		rootKey = clean
-	}
+	rootKey := normalizeRootKey(clean)
 
 	tm.mu.RLock()
 	root, exists := tm.Roots[rootKey]
+	if !exists {
+		// Fallback: check case-insensitively across Roots
+		for rKey, rNode := range tm.Roots {
+			if strings.EqualFold(rKey, rootKey) || strings.EqualFold(rKey, clean) || strings.EqualFold(rKey, vol+"\\") {
+				root = rNode
+				exists = true
+				break
+			}
+		}
+	}
 	tm.mu.RUnlock()
 
 	if !exists {
 		return nil
 	}
 
-	if clean == rootKey || clean == vol {
+	if clean == rootKey || strings.EqualFold(clean, rootKey) || clean == vol || strings.EqualFold(clean, vol) {
 		return root
 	}
 
@@ -278,6 +399,16 @@ func (tm *TreeManager) FindDir(dirPath string) *DirNode {
 		}
 		curr.mu.RLock()
 		child, ok := curr.Children[part]
+		if !ok {
+			// Fallback: case-insensitive match for Windows paths
+			for cName, cNode := range curr.Children {
+				if strings.EqualFold(cName, part) {
+					child = cNode
+					ok = true
+					break
+				}
+			}
+		}
 		curr.mu.RUnlock()
 		if !ok {
 			return nil
@@ -296,12 +427,14 @@ func (tm *TreeManager) RemoveFile(filePath string) (int64, bool) {
 		return 0, false
 	}
 
+	base := filepath.Base(filePath)
+
 	dirNode.mu.Lock()
 	var removedSize int64
 	var found bool
 	newFiles := make([]*FileNode, 0, len(dirNode.Files))
 	for _, f := range dirNode.Files {
-		if f.Path == filePath {
+		if f != nil && f.name == base {
 			removedSize = f.Size
 			found = true
 		} else {
@@ -317,52 +450,66 @@ func (tm *TreeManager) RemoveFile(filePath string) (int64, bool) {
 
 	if found {
 		tm.bubbleUpSize(dirPath, -removedSize, -1)
+		tm.markChanged()
 	}
 
 	return removedSize, found
 }
 
 // GetDirSummary returns a summary of the requested directory for tree navigation in the UI.
-func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int) *DirSummary {
+//
+// maxFiles é opcional: quando omitido vale DefaultSummaryMaxFiles. A lista
+// `Files` traz os maiores arquivos diretos da pasta, e `DirectFileCount` diz
+// quantos existem de verdade, para a interface saber que houve corte.
+func (tm *TreeManager) GetDirSummary(dirPath string, maxDepth int, maxFiles ...int) *DirSummary {
+	if maxDepth <= 0 {
+		maxDepth = 5
+	} else if maxDepth > 10 {
+		maxDepth = 10
+	}
+
+	limit := DefaultSummaryMaxFiles
+	if len(maxFiles) > 0 && maxFiles[0] > 0 {
+		limit = maxFiles[0]
+	}
+
 	node := tm.FindDir(dirPath)
 	if node == nil {
 		return nil
 	}
 
-	return tm.buildSummary(node, 1, maxDepth)
+	return tm.buildSummary(node, 1, maxDepth, limit)
 }
 
-func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *DirSummary {
+func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth, maxFiles int) *DirSummary {
 	if node == nil {
 		return nil
 	}
 
+	nodePath := node.Path()
+
 	node.mu.RLock()
 	summary := &DirSummary{
-		Path:                node.Path,
+		Path:                nodePath,
 		Name:                node.Name,
 		TotalSize:           node.TotalSize,
 		TotalAllocatedSize:  node.TotalAllocatedSize,
 		FileCount:           node.FileCount,
+		DirectFileCount:     int64(len(node.Files)),
 		CompressedFileCount: node.CompressedFileCount,
 		SubDirCount:         node.SubDirCount,
-		ModTime:             node.ModTime,
-		CreateTime:          node.CreateTime,
-		AccessTime:          node.AccessTime,
 		IsSymlink:           node.IsSymlink,
 		LinkTarget:          node.LinkTarget,
 	}
 
-	// CRITICAL PERFORMANCE & MEMORY PROTECTION:
-	// Only copy direct files for the current folder being navigated (depth == 1).
-	// Subdirectories at depth > 1 are represented by their aggregated TotalSize and SubDirs.
-	// This prevents serializing 40+ million FileNode objects into multi-gigabyte JSONs that crash browser memory!
-	if currentDepth == 1 {
-		summary.Files = make([]*FileNode, len(node.Files))
-		copy(summary.Files, node.Files)
-	} else {
-		summary.Files = []*FileNode{}
+	// A pasta consultada devolve até maxFiles arquivos; subpastas devolvem os
+	// DeepSummaryMaxFiles maiores, o bastante para o treemap mostrar os arquivos
+	// gigantes sem estourar a resposta (achado H6).
+	perDirLimit := maxFiles
+	if currentDepth > 1 {
+		perDirLimit = DeepSummaryMaxFiles
 	}
+	summary.Files = topFilesBySize(node.Files, perDirLimit)
 
 	var children []*DirNode
 	if currentDepth <= maxDepth {
@@ -376,7 +523,7 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 	if currentDepth <= maxDepth && len(children) > 0 {
 		subDirs := make([]*DirSummary, 0, len(children))
 		for _, child := range children {
-			subSummary := tm.buildSummary(child, currentDepth+1, maxDepth)
+			subSummary := tm.buildSummary(child, currentDepth+1, maxDepth, maxFiles)
 			if subSummary != nil {
 				subDirs = append(subDirs, subSummary)
 			}
@@ -384,14 +531,172 @@ func (tm *TreeManager) buildSummary(node *DirNode, currentDepth, maxDepth int) *
 		sort.Slice(subDirs, func(i, j int) bool {
 			return subDirs[i].TotalSize > subDirs[j].TotalSize
 		})
-		// Cap subdirs per folder to top 500 largest subfolders to keep UI instantly snappy
-		if len(subDirs) > 500 {
-			subDirs = subDirs[:500]
+		// Cap subdirs: allow up to 500 for the direct folder (depth 1), and 50 for deeper levels to keep treemap snappy
+		maxSubDirs := 50
+		if currentDepth == 1 {
+			maxSubDirs = 500
+		}
+		if len(subDirs) > maxSubDirs {
+			subDirs = subDirs[:maxSubDirs]
 		}
 		summary.SubDirs = subDirs
 	}
 
 	return summary
+}
+
+// topFilesBySize devolve os `limit` maiores arquivos da fatia, sem alterá-la.
+// O chamador precisa segurar o lock do nó.
+func topFilesBySize(files []*FileNode, limit int) []*FileNode {
+	if len(files) == 0 {
+		return []*FileNode{}
+	}
+	out := make([]*FileNode, len(files))
+	copy(out, files)
+	if limit > 0 && len(out) > limit {
+		sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
+		return out[:limit]
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
+	return out
+}
+
+// GetFilesPage devolve uma página dos arquivos diretos de uma pasta, junto com
+// o total real. sortBy aceita "size_desc" (padrão), "name_asc" e "mod_desc".
+func (tm *TreeManager) GetFilesPage(path string, offset, limit int, sortBy string) (int, []*FileNode) {
+	node := tm.FindDir(path)
+	if node == nil {
+		return 0, nil
+	}
+
+	node.mu.RLock()
+	files := make([]*FileNode, len(node.Files))
+	copy(files, node.Files)
+	node.mu.RUnlock()
+
+	total := len(files)
+
+	switch sortBy {
+	case SortNameAsc:
+		sort.Slice(files, func(i, j int) bool {
+			return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
+		})
+	case SortModDesc:
+		sort.Slice(files, func(i, j int) bool { return files[i].ModTime() > files[j].ModTime() })
+	default:
+		sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return total, []*FileNode{}
+	}
+	if limit <= 0 || limit > MaxFilesPageLimit {
+		limit = MaxFilesPageLimit
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := make([]*FileNode, end-offset)
+	copy(page, files[offset:end])
+	return total, page
+}
+
+// ExtensionStatResult aggregates count and size per file extension.
+type ExtensionStatResult struct {
+	Extension  string  `json:"extension"`
+	TotalBytes int64   `json:"totalBytes"`
+	FileCount  int     `json:"fileCount"`
+	Percentage float64 `json:"percentage"`
+}
+
+// AggregateExtensionStats computes file extension statistics directly on the tree in a single pass without copying 50M pointers.
+func (tm *TreeManager) AggregateExtensionStats() []*ExtensionStatResult {
+	extMap := make(map[string]*ExtensionStatResult)
+	var grandTotalBytes int64
+
+	tm.IterateFiles(func(f *FileNode) bool {
+		ext := strings.ToLower(f.Extension())
+		if ext == "" {
+			ext = "(sem extensão)"
+		}
+		st, ok := extMap[ext]
+		if !ok {
+			st = &ExtensionStatResult{Extension: ext}
+			extMap[ext] = st
+		}
+		st.TotalBytes += f.Size
+		st.FileCount++
+		grandTotalBytes += f.Size
+		return true
+	})
+
+	var statsList []*ExtensionStatResult
+	for _, st := range extMap {
+		if grandTotalBytes > 0 {
+			st.Percentage = (float64(st.TotalBytes) / float64(grandTotalBytes)) * 100.0
+		}
+		statsList = append(statsList, st)
+	}
+
+	sort.Slice(statsList, func(i, j int) bool {
+		return statsList[i].TotalBytes > statsList[j].TotalBytes
+	})
+
+	if len(statsList) > 50 {
+		statsList = statsList[:50]
+	}
+
+	return statsList
+}
+
+// IterateFiles walks all files in the tree, executing fn for each. If fn returns false, iteration stops.
+func (tm *TreeManager) IterateFiles(fn func(f *FileNode) bool) {
+	tm.mu.RLock()
+	roots := make([]*DirNode, 0, len(tm.Roots))
+	for _, r := range tm.Roots {
+		roots = append(roots, r)
+	}
+	tm.mu.RUnlock()
+
+	for _, r := range roots {
+		if !iterateNodeFiles(r, fn) {
+			return
+		}
+	}
+}
+
+func iterateNodeFiles(node *DirNode, fn func(f *FileNode) bool) bool {
+	if node == nil {
+		return true
+	}
+
+	node.mu.RLock()
+	files := make([]*FileNode, len(node.Files))
+	copy(files, node.Files)
+	children := make([]*DirNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		children = append(children, child)
+	}
+	node.mu.RUnlock()
+
+	for _, f := range files {
+		if !fn(f) {
+			return false
+		}
+	}
+
+	for _, child := range children {
+		if !iterateNodeFiles(child, fn) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // GetAllFiles collects all FileNodes from all roots in the tree.
@@ -467,10 +772,11 @@ func (node *DirNode) GetChildren() []*DirNode {
 	return children
 }
 
-// GetInfo returns a snapshot copy of the DirNode's scalar fields.
+// GetInfo returns a snapshot copy of the DirNode's scalar fields. O modTime
+// devolvido é sempre 0: DirNode nunca guardou data própria (ADR-0001).
 func (node *DirNode) GetInfo() (path, name string, totalSize, fileCount, subDirCount, modTime int64) {
+	path = node.Path()
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	return node.Path, node.Name, node.TotalSize, node.FileCount, node.SubDirCount, node.ModTime
+	return path, node.Name, node.TotalSize, node.FileCount, node.SubDirCount, 0
 }
-

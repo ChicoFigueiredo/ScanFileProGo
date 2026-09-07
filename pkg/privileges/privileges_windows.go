@@ -3,12 +3,14 @@
 package privileges
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +18,40 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+// uacTimeout is how long the parent waits for the elevated child to call back.
+// It has to cover a human reading the UAC prompt.
+const uacTimeout = 120 * time.Second
+
+// ShellExecuteExW mask flags.
+const (
+	seeMaskNoCloseProcess = 0x00000040 // keep hProcess open so we learn the PID
+	seeMaskNoAsync        = 0x00000100 // complete before returning
+	seeMaskFlagNoUI       = 0x00000400 // no error dialog, we report it ourselves
+)
+
+// shellExecuteInfoW mirrors SHELLEXECUTEINFOW.
+type shellExecuteInfoW struct {
+	cbSize         uint32
+	fMask          uint32
+	hwnd           uintptr
+	lpVerb         *uint16
+	lpFile         *uint16
+	lpParameters   *uint16
+	lpDirectory    *uint16
+	nShow          int32
+	hInstApp       windows.Handle
+	lpIDList       uintptr
+	lpClass        *uint16
+	hkeyClass      windows.Handle
+	dwHotKey       uint32
+	hIconOrMonitor windows.Handle
+	hProcess       windows.Handle
+}
+
+// processExit ends this process. It is a variable so tests can observe the
+// decision instead of dying with it.
+var processExit = os.Exit
 
 // PrivilegeStatus reports the current elevation and security token status.
 type PrivilegeStatus struct {
@@ -31,16 +67,17 @@ var (
 	modadvapi32               = windows.NewLazySystemDLL("advapi32.dll")
 	procAdjustTokenPrivileges = modadvapi32.NewProc("AdjustTokenPrivileges")
 	procLookupPrivilegeValueW = modadvapi32.NewProc("LookupPrivilegeValueW")
-	modshell32                 = windows.NewLazySystemDLL("shell32.dll")
-	procShellExecuteW          = modshell32.NewProc("ShellExecuteW")
+	modshell32                = windows.NewLazySystemDLL("shell32.dll")
+	procShellExecuteW         = modshell32.NewProc("ShellExecuteW")
+	procShellExecuteExW       = modshell32.NewProc("ShellExecuteExW")
 )
 
 // List of high-privilege Windows security tokens to request
 var criticalPrivileges = []string{
-	"SeBackupPrivilege",              // Bypasses all file/folder read ACLs (NTFS backup intent)
-	"SeRestorePrivilege",             // Bypasses all file/folder write ACLs
-	"SeSecurityPrivilege",            // Access SACL and security descriptors
-	"SeTakeOwnershipPrivilege",       // Take ownership of files if needed
+	"SeBackupPrivilege",               // Bypasses all file/folder read ACLs (NTFS backup intent)
+	"SeRestorePrivilege",              // Bypasses all file/folder write ACLs
+	"SeSecurityPrivilege",             // Access SACL and security descriptors
+	"SeTakeOwnershipPrivilege",        // Take ownership of files if needed
 	"SeIncreaseBasePriorityPrivilege", // Allow high priority I/O threads
 	"SeProfileSingleProcessPrivilege",
 }
@@ -276,10 +313,11 @@ func RelaunchAsAdmin() error {
 		return err
 	}
 
-	// Pass original args (excluding the executable itself)
+	// Pass original args (excluding the executable itself), quoted so a path
+	// with spaces survives the trip.
 	var argsStr string
 	if len(os.Args) > 1 {
-		argsStr = strings.Join(os.Args[1:], " ")
+		argsStr = escapeArgs(os.Args[1:])
 	}
 	argsPtr, _ := syscall.UTF16PtrFromString(argsStr)
 
@@ -332,21 +370,7 @@ func RelaunchAsAdminWithIPC(rawArgs []string) error {
 		return err
 	}
 
-	// Filter out --admin flag to prevent recursive elevation requests, add --elevated-child, --ipc-addr, and --parent-pid
-	var childArgs []string
-	childArgs = append(childArgs, 
-		"--elevated-child", 
-		fmt.Sprintf("--ipc-addr=%s", ipcAddr),
-		fmt.Sprintf("--parent-pid=%d", os.Getpid()),
-	)
-
-	for _, arg := range rawArgs {
-		if arg != "--admin" && arg != "-admin" && !strings.HasPrefix(arg, "--ipc-addr") && arg != "--elevated-child" && !strings.HasPrefix(arg, "--parent-pid") {
-			childArgs = append(childArgs, arg)
-		}
-	}
-
-	argsStr := strings.Join(childArgs, " ")
+	argsStr := escapeArgs(buildRelaunchArgs(rawArgs, ipcAddr, os.Getpid()))
 	argsPtr, _ := syscall.UTF16PtrFromString(argsStr)
 
 	cwd, _ := os.Getwd()
@@ -369,7 +393,8 @@ func RelaunchAsAdminWithIPC(rawArgs []string) error {
 		return fmt.Errorf("elevação UAC cancelada ou recusada pelo usuário (código %d): %w", r1, errCall)
 	}
 
-	// Wait for child to connect back (with timeout of 35 seconds for UAC prompt)
+	// Wait for the child to connect back. The UAC prompt waits for a human, so
+	// the window is generous: 120 seconds.
 	type acceptResult struct {
 		conn net.Conn
 		err  error
@@ -387,7 +412,7 @@ func RelaunchAsAdminWithIPC(rawArgs []string) error {
 			return fmt.Errorf("falha ao aceitar conexão do processo elevado: %w", res.err)
 		}
 		childConn = res.conn
-	case <-time.After(35 * time.Second):
+	case <-time.After(uacTimeout):
 		return fmt.Errorf("tempo limite excedido aguardando aprovação UAC")
 	}
 	defer childConn.Close()
@@ -406,24 +431,171 @@ func RelaunchAsAdminWithIPC(rawArgs []string) error {
 	return nil
 }
 
-// MonitorParentProcess waits for the parent process to terminate and immediately exits, preventing zombie processes.
+// MonitorParentProcess waits for the parent process to terminate and exits with
+// it, so an elevated child never outlives the window that asked for it.
+//
+// A parent that cannot be opened is a parent that is already gone or beyond
+// reach: this process exits immediately instead of staying alive forever
+// holding the scanned tree in memory (M7).
 func MonitorParentProcess(parentPID int) {
 	if parentPID <= 0 {
+		// Nothing to monitor: this process was not launched by another one.
 		return
 	}
 	go func() {
-		handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(parentPID))
-		if err != nil {
-			return
-		}
-		defer windows.CloseHandle(handle)
-
-		// Wait indefinitely until the parent process terminates or is killed
-		event, err := windows.WaitForSingleObject(handle, windows.INFINITE)
-		if err == nil && (event == windows.WAIT_OBJECT_0 || event == windows.WAIT_FAILED) {
-			os.Exit(0)
-		}
+		waitForParent(uint32(parentPID))
+		processExit(0)
 	}()
 }
 
+// waitForParent blocks until the parent process ends or becomes unreachable.
+func waitForParent(parentPID uint32) {
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, parentPID)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(handle)
+	_, _ = windows.WaitForSingleObject(handle, windows.INFINITE)
+}
 
+// WaitForProcessExit blocks until the process ends or timeout expires. A
+// process that no longer exists counts as ended. A timeout of zero or less
+// waits indefinitely.
+func WaitForProcessExit(pid uint32, timeout time.Duration) error {
+	if pid == 0 {
+		return errors.New("pid inválido")
+	}
+
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return nil // already gone
+		}
+		return fmt.Errorf("não foi possível acompanhar o processo %d: %w", pid, err)
+	}
+	defer windows.CloseHandle(handle)
+
+	wait := uint32(windows.INFINITE)
+	if timeout > 0 {
+		ms := timeout.Milliseconds()
+		if ms >= int64(windows.INFINITE) {
+			ms = int64(windows.INFINITE) - 1
+		}
+		wait = uint32(ms)
+	}
+
+	event, err := windows.WaitForSingleObject(handle, wait)
+	switch {
+	case event == windows.WAIT_OBJECT_0:
+		return nil
+	case event == uint32(windows.WAIT_TIMEOUT):
+		return fmt.Errorf("o processo %d continuou em execução após %s", pid, timeout)
+	case err != nil:
+		return fmt.Errorf("falha ao aguardar o processo %d: %w", pid, err)
+	default:
+		return fmt.Errorf("falha ao aguardar o processo %d (evento %d)", pid, event)
+	}
+}
+
+// LaunchElevatedHandoff starts a new elevated instance of this executable with
+// the given arguments and returns its PID without waiting for it. The caller
+// keeps running and decides when to hand over (see WaitForProcessExit and the
+// --handoff flag), so elevating from the interface never leaves two instances
+// fighting over the same port.
+func LaunchElevatedHandoff(args []string) (uint32, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("não foi possível obter o executável: %w", err)
+	}
+
+	verbPtr, err := syscall.UTF16PtrFromString("runas")
+	if err != nil {
+		return 0, err
+	}
+	exePtr, err := syscall.UTF16PtrFromString(exePath)
+	if err != nil {
+		return 0, err
+	}
+	var paramsPtr *uint16
+	if line := escapeArgs(args); line != "" {
+		if paramsPtr, err = syscall.UTF16PtrFromString(line); err != nil {
+			return 0, err
+		}
+	}
+	dirPtr, err := syscall.UTF16PtrFromString(filepath.Dir(exePath))
+	if err != nil {
+		return 0, err
+	}
+
+	info := shellExecuteInfoW{
+		fMask:        seeMaskNoCloseProcess | seeMaskNoAsync | seeMaskFlagNoUI,
+		lpVerb:       verbPtr,
+		lpFile:       exePtr,
+		lpParameters: paramsPtr,
+		lpDirectory:  dirPtr,
+		nShow:        windows.SW_SHOWNORMAL,
+	}
+	info.cbSize = uint32(unsafe.Sizeof(info))
+
+	// ShellExecuteExW expects a COM apartment on the calling thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED|windows.COINIT_DISABLE_OLE1DDE); err == nil {
+		defer windows.CoUninitialize()
+	}
+
+	r1, _, callErr := procShellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
+	if r1 == 0 {
+		if errors.Is(callErr, windows.ERROR_CANCELLED) {
+			return 0, errors.New("elevação recusada pelo usuário no aviso do UAC")
+		}
+		return 0, fmt.Errorf("falha ao iniciar a instância elevada: %w", callErr)
+	}
+	if info.hProcess == 0 {
+		return 0, errors.New("o Windows não devolveu o processo elevado")
+	}
+	defer windows.CloseHandle(info.hProcess)
+
+	pid, err := windows.GetProcessId(info.hProcess)
+	if err != nil {
+		return 0, fmt.Errorf("não foi possível identificar o processo elevado: %w", err)
+	}
+	return pid, nil
+}
+
+// escapeArgs joins arguments into a command line the child parses back into
+// exactly the same strings, quoting spaces and quotes. Empty arguments are
+// dropped: they would become a stray pair of quotes.
+func escapeArgs(args []string) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "" {
+			continue
+		}
+		parts = append(parts, syscall.EscapeArg(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// buildRelaunchArgs prepends the handshake flags for the elevated child and
+// drops the flags that belong to this process, so the child never tries to
+// elevate again nor reuses the parent's IPC address.
+func buildRelaunchArgs(rawArgs []string, ipcAddr string, parentPID int) []string {
+	childArgs := []string{
+		"--elevated-child",
+		fmt.Sprintf("--ipc-addr=%s", ipcAddr),
+		fmt.Sprintf("--parent-pid=%d", parentPID),
+	}
+
+	for _, arg := range rawArgs {
+		switch {
+		case arg == "--admin", arg == "-admin", arg == "--elevated-child":
+			continue
+		case strings.HasPrefix(arg, "--ipc-addr"), strings.HasPrefix(arg, "--parent-pid"):
+			continue
+		}
+		childArgs = append(childArgs, arg)
+	}
+
+	return childArgs
+}

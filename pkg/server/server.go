@@ -8,35 +8,43 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"scanfile/pkg/ai"
 	"scanfile/pkg/config"
-	"scanfile/pkg/drives"
 	"scanfile/pkg/hasher"
 	"scanfile/pkg/indexer"
-	"scanfile/pkg/privileges"
-	"scanfile/pkg/recycle"
+	"scanfile/pkg/mcp"
 	"scanfile/pkg/scanner"
 	"scanfile/pkg/watcher"
 )
 
 // AppServer orchestrates the REST & SSE API for the ScanFile application.
 type AppServer struct {
-	Tree        *scanner.TreeManager
 	Scanner     *scanner.Scanner
 	Hasher      *HasherManager
 	Index       *indexer.DuplicateIndex
 	FolderIndex *indexer.FolderDuplicateIndex
 	Watcher     *watcher.FSWatcher
+	MCPContext  *mcp.MCPToolsContext
+	AIAgent     *ai.AgentCoordinator
 	uiFS        fs.FS
 	httpServer  *http.Server
 	listener    net.Listener
+
+	// stateMu protege a árvore ativa, as Raízes Varridas e a Configuração da
+	// última Varredura. Quem escreve (iniciar Varredura, adotar Snapshot) não é
+	// quem lê: o relógio do Autosave, rescanRoot, a Reciclagem e a gravação de
+	// Snapshot leem de goroutines próprias. Use os acessores, nunca os campos.
+	stateMu     sync.RWMutex
+	tree        *scanner.TreeManager
 	activeRoots []string
 	lastConfig  scanner.ScanConfig
 
@@ -44,6 +52,43 @@ type AppServer struct {
 	sseClients   map[chan string]bool
 	recentLogs   []scanner.FSEventLog
 	recentLogsMu sync.RWMutex
+
+	// Sessão e ciclo de vida (etapa 2, contrato 1.1 e 1.9)
+	sessionToken     string
+	startedAt        time.Time
+	noWindow         bool
+	shutdownOnce     sync.Once
+	shutdownCh       chan struct{}
+	presenceMu       sync.Mutex
+	sseCount         int
+	lastClientSeen   time.Time
+	shutdownWhenDone bool
+
+	// Varredura em curso (etapa 2, contrato 1.2 e 1.7)
+	scanMu     sync.Mutex
+	scanCancel context.CancelFunc
+	scanDone   chan struct{}
+
+	// autosaveWriteMu serializa a gravação em disco. É separado de autosaveMu
+	// de propósito: aquele guarda o estado do relógio em seções curtas e é
+	// tomado DENTRO desta gravação para publicar o novo instante-base.
+	autosaveWriteMu    sync.Mutex
+	autosaveMu         sync.Mutex
+	lastAutoSaveChange uint64
+	lastAutoSaveAt     time.Time
+	autosaveConfig     scanner.ScanConfig
+	autosaveRunning    bool
+	autosaveStop       chan struct{}
+
+	// scanBarrier é chamado no início de cada etapa da orquestração. Fica nil em
+	// produção; os testes o usam para segurar o pipeline num ponto conhecido e
+	// provar o 409 e o Cancelamento sem depender de tempo de relógio.
+	scanBarrier func(stage string)
+
+	// Monitoramento e desligamento das tarefas de fundo (etapa 2, contrato 1.10)
+	watcherMu     sync.Mutex
+	bgStopped     bool
+	savedScansDir string
 }
 
 // HasherManager wraps hasher execution and state.
@@ -51,6 +96,93 @@ type HasherManager struct {
 	Engine *hasher.Hasher
 	Status scanner.ScanStatus
 	mu     sync.RWMutex
+}
+
+type serverToolsExecutor struct {
+	mcpCtx *mcp.MCPToolsContext
+}
+
+func (ste *serverToolsExecutor) ExecuteTool(ctx context.Context, name string, argsJSON string) (string, *ai.ActionProposal, error) {
+	switch name {
+	case "classify_files":
+		var params mcp.ClassifyFilesParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		items, err := ste.mcpCtx.ClassifyFiles(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(items, "", "  ")
+		return string(data), nil, nil
+
+	case "analyze_file_content":
+		var params mcp.AnalyzeFileParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		res, err := ste.mcpCtx.AnalyzeFileContent(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return string(data), nil, nil
+
+	case "analyze_image_visual":
+		var params mcp.AnalyzeImageParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		res, err := ste.mcpCtx.AnalyzeImageVisual(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return string(data), nil, nil
+
+	case "compare_visual_similarity":
+		var params mcp.CompareVisualParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		res, err := ste.mcpCtx.CompareVisualSimilarity(ctx, params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return string(data), nil, nil
+
+	case "write_file_metadata":
+		var params mcp.WriteMetadataParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		meta, err := ste.mcpCtx.WriteFileMetadata(params)
+		if err != nil {
+			return "", nil, err
+		}
+		data, _ := json.MarshalIndent(meta, "", "  ")
+		return string(data), nil, nil
+
+	case "propose_actions":
+		var params mcp.ProposeActionParams
+		_ = json.Unmarshal([]byte(argsJSON), &params)
+		prop, err := ste.mcpCtx.ProposeActions(params)
+		if err != nil {
+			return "", nil, err
+		}
+		var aiProp *ai.ActionProposal
+		if prop != nil {
+			aiProp = &ai.ActionProposal{
+				ProposalID:  prop.ID,
+				ActionType:  prop.ActionType,
+				Description: prop.Description,
+				Files:       prop.Files,
+				FileCount:   prop.FileCount,
+				TotalBytes:  prop.TotalBytes,
+				TotalSize:   prop.TotalSize,
+				Category:    prop.Category,
+				DryRun:      prop.DryRun,
+				Executed:    prop.Executed,
+				CreatedAt:   prop.CreatedAt.Format(time.RFC3339),
+			}
+		}
+		data, _ := json.MarshalIndent(prop, "", "  ")
+		return string(data), aiProp, nil
+
+	default:
+		return fmt.Sprintf("Ferramenta desconhecida: %s", name), nil, nil
+	}
 }
 
 // NewAppServer creates and initializes an AppServer.
@@ -61,82 +193,32 @@ func NewAppServer(uiFS fs.FS) *AppServer {
 	sc := scanner.NewScanner(tree)
 	hEngine := hasher.NewHasher()
 
+	cfg := config.LoadConfig()
+	ollamaClient := ai.NewOllamaClient(cfg.AIOllamaEndpoint)
+	mcpCtx := mcp.NewMCPToolsContext(tree, idx, fIdx, ollamaClient, cfg.AIOllamaModel)
+
+	toolsDefs := mcp.GetOpenAIToolDefinitions()
+	agent := ai.NewAgentCoordinator(
+		cfg.AIOllamaEndpoint,
+		config.OpenRouterKey(cfg),
+		"",
+		&serverToolsExecutor{mcpCtx: mcpCtx},
+		toolsDefs,
+	)
+
 	return &AppServer{
-		Tree:        tree,
-		Scanner:     sc,
-		Hasher:      &HasherManager{Engine: hEngine},
-		Index:       idx,
-		FolderIndex: fIdx,
-		uiFS:        uiFS,
-		sseClients:  make(map[chan string]bool),
-		recentLogs:  make([]scanner.FSEventLog, 0, 100),
+		tree:          tree,
+		Scanner:       sc,
+		Hasher:        &HasherManager{Engine: hEngine},
+		Index:         idx,
+		FolderIndex:   fIdx,
+		MCPContext:    mcpCtx,
+		AIAgent:       agent,
+		uiFS:          uiFS,
+		sseClients:    make(map[chan string]bool),
+		recentLogs:    make([]scanner.FSEventLog, 0, 100),
+		savedScansDir: DefaultSavedScansDir,
 	}
-}
-
-// Start launches the local HTTP/SSE server on an ephemeral or designated port.
-func (s *AppServer) Start(port int) (string, error) {
-	mux := http.NewServeMux()
-
-	// API Routes
-	mux.HandleFunc("/api/drives", s.handleGetDrives)
-	mux.HandleFunc("/api/scan/start", s.handleStartScan)
-	mux.HandleFunc("/api/scan/cancel", s.handleCancelScan)
-	mux.HandleFunc("/api/scan/status", s.handleGetStatus)
-	mux.HandleFunc("/api/tree", s.handleGetTree)
-	mux.HandleFunc("/api/duplicates", s.handleGetDuplicates)
-	mux.HandleFunc("/api/stats/extensions", s.handleGetExtensionStats)
-	mux.HandleFunc("/api/stats/idle-files", s.handleGetIdleFiles)
-	mux.HandleFunc("/api/files/recycle", s.handleRecycleFiles)
-	mux.HandleFunc("/api/files/delete", s.handleDeleteFiles)
-	mux.HandleFunc("/api/events", s.handleSSE)
-	// Logs & Error Log Routes
-	mux.HandleFunc("/api/logs", s.handleGetLogs)
-	mux.HandleFunc("/api/logs/errors/list", s.handleListErrorLogs)
-	mux.HandleFunc("/api/logs/errors/active", s.handleGetActiveErrorLog)
-
-	// System Privilege & UAC Elevation Routes
-	mux.HandleFunc("/api/system/privileges", s.handleGetPrivileges)
-	mux.HandleFunc("/api/system/elevate", s.handleElevateProcess)
-
-	// Cache Persistence Routes
-	mux.HandleFunc("/api/cache/save", s.handleSaveCache)
-	mux.HandleFunc("/api/cache/load", s.handleLoadCache)
-	mux.HandleFunc("/api/cache/list", s.handleListCaches)
-
-	// Folder Comparison & Duplicate Folder Routes
-	mux.HandleFunc("/api/folders/duplicates", s.handleGetFolderDuplicates)
-	mux.HandleFunc("/api/folders/compare", s.handleCompareFolders)
-
-	// User Preferences Config Routes
-	mux.HandleFunc("/api/config", s.handleConfig)
-
-	// Static UI assets
-	if s.uiFS != nil {
-		mux.Handle("/", http.FileServer(http.FS(s.uiFS)))
-	}
-
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		// Fallback to any available port
-		ln, err = net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return "", err
-		}
-	}
-
-	s.listener = ln
-	s.httpServer = &http.Server{
-		Handler:      s.corsMiddleware(s.debugMiddleware(mux)),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
-	}
-
-	go func() {
-		_ = s.httpServer.Serve(ln)
-	}()
-
-	return fmt.Sprintf("http://%s", ln.Addr().String()), nil
 }
 
 // DebugMode controls verbose HTTP request and internal state logging.
@@ -186,705 +268,399 @@ func (s *AppServer) debugMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Stop gracefully stops the server.
-func (s *AppServer) Stop() {
-	if s.Watcher != nil {
-		s.Watcher.Stop()
-	}
-	if s.httpServer != nil {
-		_ = s.httpServer.Shutdown(context.Background())
-	}
-}
-
-func (s *AppServer) corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (s *AppServer) broadcastSSE(eventType string, data any) {
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-	msg := fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(bytes))
-
-	s.eventsMu.RLock()
-	defer s.eventsMu.RUnlock()
-	for ch := range s.sseClients {
-		select {
-		case ch <- msg:
-		default:
-		}
-	}
-}
-
-func (s *AppServer) handleSSE(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "SSE not supported", http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	ch := make(chan string, 100)
-	s.eventsMu.Lock()
-	s.sseClients[ch] = true
-	s.eventsMu.Unlock()
-
-	defer func() {
-		s.eventsMu.Lock()
-		delete(s.sseClients, ch)
-		s.eventsMu.Unlock()
-		close(ch)
-	}()
-
-	notify := r.Context().Done()
-	for {
-		select {
-		case <-notify:
-			return
-		case msg := <-ch:
-			_, _ = fmt.Fprint(w, msg)
-			flusher.Flush()
-		}
-	}
-}
-
-func (s *AppServer) handleGetDrives(w http.ResponseWriter, r *http.Request) {
-	driveList, err := drives.GetLogicalDrives()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(driveList)
-}
-
-func (s *AppServer) handleStartScan(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var config scanner.ScanConfig
-	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
-		http.Error(w, "Invalid body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if len(config.Roots) == 0 {
-		http.Error(w, "No roots selected", http.StatusBadRequest)
-		return
-	}
-
-	if config.HashAlgorithm == "" {
-		config.HashAlgorithm = "xxhash"
-	}
-	if config.MinSizeForHash == 0 {
-		config.MinSizeForHash = 1
-	}
-
-	s.activeRoots = config.Roots
-	s.lastConfig = config
-
-	// Reset tree and index for fresh scan
-	s.Tree.Reset()
-	if s.Watcher != nil {
-		s.Watcher.Stop()
-	}
-
-	// Launch background orchestration
-	go s.orchestrateScan(config)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-}
-
-func (s *AppServer) orchestrateScan(config scanner.ScanConfig) {
-	ctx := context.Background()
-
-	// PHASE 1: Metadata scan
-	_ = s.Scanner.StartScan(ctx, config, func(st scanner.ScanStatus) {
-		s.broadcastSSE("scan_progress", st)
-	})
-
-	// Get all scanned files
-	allFiles := s.Tree.GetAllFiles()
-
-	// PHASE 2: Content Hashing
-	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "phase2_hashing"
-		st.CurrentPath = "Iniciando cálculo de hashes em multithread..."
-	})
-
-	opts := hasher.ComputeHashOptions{
-		Algorithm:     config.HashAlgorithm,
-		HashAllFiles:  config.HashAllFiles,
-		MinSize:       config.MinSizeForHash,
-		WorkerThreads: config.WorkerThreads,
-		DiskLogger:    s.Scanner.DiskLogger,
-		OnProgress: func(hashedCount, totalCount, bytesHashed int64, currentPath string, rateMBps float64, activeWorkers []scanner.ActiveWorker, recentFiles []scanner.FileLogEntry) {
-			s.Scanner.SetStatus(func(st *ScanStatus) {
-				st.FilesToHashCount = totalCount
-				st.FilesHashedCount = hashedCount
-				st.BytesHashed = bytesHashed
-				st.CurrentPath = currentPath
-				st.HashRateMBPerSec = rateMBps
-				st.ActiveWorkers = activeWorkers
-				st.RecentFiles = recentFiles
-				if totalCount > 0 {
-					st.ProgressPercent = (float64(hashedCount) / float64(totalCount)) * 100.0
-				}
-			})
-			s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-		},
-	}
-
-	_ = s.Hasher.Engine.RunHashing(ctx, allFiles, opts)
-
-	// Rebuild duplicate file index
-	s.Index.RebuildIndex(allFiles)
-	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
-
-	// Rebuild duplicate folder index
-	s.FolderIndex.RebuildFolderIndex(s.Tree)
-	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
-
-	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "completed"
-		st.CurrentPath = "Varredura, indexação de hashes e análise de pastas finalizadas com sucesso!"
-		st.DuplicateGroupsCount = grpCount
-		st.DuplicateFilesCount = fileCount
-		st.DuplicateWastedBytes = wasted
-		st.DuplicateFolderGroupsCount = fGrpCount
-		st.DuplicateFoldersCount = fCount
-		st.DuplicateFolderWastedBytes = fWasted
-		st.ProgressPercent = 100
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-
-	// Start Windows Real-time Watcher hooks
-	w, err := watcher.NewFSWatcher(s.Tree, s.Index, config.HashAlgorithm)
-	if err == nil {
-		s.Watcher = w
-		_ = s.Watcher.Start(ctx, config.Roots, func(ev scanner.FSEventLog) {
-			s.recentLogsMu.Lock()
-			s.recentLogs = append(s.recentLogs, ev)
-			if len(s.recentLogs) > 200 {
-				s.recentLogs = s.recentLogs[len(s.recentLogs)-200:]
-			}
-			s.recentLogsMu.Unlock()
-
-			// Update duplicate stats in status
-			g, f, wasted := s.Index.GetSummaryStats()
-			s.Scanner.SetStatus(func(st *ScanStatus) {
-				st.DuplicateGroupsCount = g
-				st.DuplicateFilesCount = f
-				st.DuplicateWastedBytes = wasted
-				st.IsWatching = true
-			})
-
-			s.broadcastSSE("fs_event", ev)
-		})
-
-		s.Scanner.SetStatus(func(st *ScanStatus) {
-			st.Phase = "watching"
-			st.IsWatching = true
-		})
-		s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-	}
-}
-
-// SaveCacheReq parameters for saving in-memory cache to disk.
-type SaveCacheReq struct {
-	FileName string `json:"fileName,omitempty"`
-	FilePath string `json:"filePath,omitempty"`
-}
-
-func (s *AppServer) handleSaveCache(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req SaveCacheReq
-	_ = json.NewDecoder(r.Body).Decode(&req)
-
-	targetPath := req.FilePath
-	if targetPath == "" {
-		fileName := req.FileName
-		if fileName == "" {
-			fileName = fmt.Sprintf("scanfile_cache_%s.scanfile.gz", time.Now().Format("2006-01-02_150405"))
-		}
-		if !strings.HasSuffix(fileName, ".scanfile.gz") && !strings.HasSuffix(fileName, ".scanfile") && !strings.HasSuffix(fileName, ".json.gz") {
-			fileName += ".scanfile.gz"
-		}
-		targetPath = filepath.Join("saved_scans", fileName)
-	}
-
-	err := scanner.SaveCacheToFile(s.Tree, s.activeRoots, s.lastConfig, targetPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Erro ao salvar cache: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":   "saved",
-		"filePath": targetPath,
-		"fileName": filepath.Base(targetPath),
-	})
-}
-
-// LoadCacheReq parameters for loading saved cache.
-type LoadCacheReq struct {
-	FilePath string `json:"filePath"`
-}
-
-func (s *AppServer) handleLoadCache(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req LoadCacheReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FilePath == "" {
-		http.Error(w, "Caminho do arquivo de cache não especificado", http.StatusBadRequest)
-		return
-	}
-
-	loadedTree, snapshot, err := scanner.LoadCacheFromFile(req.FilePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Erro ao carregar cache: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Replace active Tree
-	s.Tree = loadedTree
-	s.Scanner.Tree = loadedTree
-	s.activeRoots = snapshot.Roots
-	s.lastConfig = snapshot.ScanSettings
-
-	// Rebuild Duplicate Index
-	allFiles := s.Tree.GetAllFiles()
-	s.Index.RebuildIndex(allFiles)
-	grpCount, fileCount, wasted := s.Index.GetSummaryStats()
-
-	// Rebuild Folder Duplicate Index
-	s.FolderIndex.RebuildFolderIndex(s.Tree)
-	fGrpCount, fCount, fWasted := s.FolderIndex.GetSummaryStats()
-
-	s.Scanner.SetStatus(func(st *ScanStatus) {
-		st.Phase = "completed"
-		st.CurrentPath = fmt.Sprintf("Cache carregado com sucesso de %s (%s)", filepath.Base(req.FilePath), snapshot.Timestamp.Format("02/01/2006 15:04"))
-		st.TotalFilesScanned = snapshot.TotalFiles
-		st.TotalDirsScanned = snapshot.TotalDirs
-		st.TotalBytesScanned = snapshot.TotalBytes
-		st.DuplicateGroupsCount = grpCount
-		st.DuplicateFilesCount = fileCount
-		st.DuplicateWastedBytes = wasted
-		st.DuplicateFolderGroupsCount = fGrpCount
-		st.DuplicateFoldersCount = fCount
-		st.DuplicateFolderWastedBytes = fWasted
-		st.ProgressPercent = 100
-	})
-	s.broadcastSSE("scan_progress", s.Scanner.GetStatus())
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":      "loaded",
-		"snapshot":    snapshot,
-		"groupCount":  grpCount,
-		"fileCount":   fileCount,
-		"wastedBytes": wasted,
-	})
-}
-
-func (s *AppServer) handleListCaches(w http.ResponseWriter, r *http.Request) {
-	list, err := scanner.ListSavedCaches("saved_scans")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(list)
-}
-
-func (s *AppServer) handleGetFolderDuplicates(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	sortBy := q.Get("sortBy")
-	if sortBy == "" {
-		sortBy = "wasted_desc"
-	}
-	minSize, _ := strconv.ParseInt(q.Get("minSize"), 10, 64)
-	search := q.Get("search")
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	offset, _ := strconv.Atoi(q.Get("offset"))
-
-	filter := indexer.FolderQueryFilter{
-		SortBy:  sortBy,
-		MinSize: minSize,
-		Search:  search,
-		Limit:   limit,
-		Offset:  offset,
-	}
-
-	res := s.FolderIndex.Query(filter)
-	if res.TotalGroups == 0 {
-		// Dynamic query fallback: Rebuild using what has already been hashed in memory
-		s.FolderIndex.RebuildFolderIndex(s.Tree)
-		res = s.FolderIndex.Query(filter)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(res)
-}
-
-func (s *AppServer) handleCompareFolders(w http.ResponseWriter, r *http.Request) {
-	pathA := r.URL.Query().Get("pathA")
-	pathB := r.URL.Query().Get("pathB")
-
-	if pathA == "" || pathB == "" {
-		http.Error(w, "Parâmetros 'pathA' e 'pathB' são obrigatórios", http.StatusBadRequest)
-		return
-	}
-
-	result, err := indexer.CompareFolders(s.Tree, pathA, pathB)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
-}
-
 // Type alias for status inside server
 type ScanStatus = scanner.ScanStatus
 
-func (s *AppServer) handleCancelScan(w http.ResponseWriter, r *http.Request) {
+// GetLiveMemoryStats gathers process memory and host OS RAM utilization.
+func GetLiveMemoryStats() *scanner.MemoryStatsPayload {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	payload := &scanner.MemoryStatsPayload{
+		AllocMB:      m.Alloc / (1024 * 1024),
+		TotalAllocMB: m.TotalAlloc / (1024 * 1024),
+		SysMB:        m.Sys / (1024 * 1024),
+		NumGC:        m.NumGC,
+		Goroutines:   runtime.NumGoroutine(),
+	}
+
+	getSystemPhysicalMemory(payload, m.Alloc)
+	return payload
+}
+
+// Fases da Varredura publicadas em ScanStatus.Phase (contrato 1.2).
+const (
+	PhaseIdle         = "idle"
+	PhaseMetadata     = "phase1_metadata"
+	PhaseHashing      = "phase2_hashing"
+	PhaseIndexing     = "indexing"
+	PhaseCompleted    = "completed"
+	PhaseCancelling   = "cancelling"
+	PhaseCancelled    = "cancelled"
+	PhaseLoadingCache = "loading_cache"
+	PhaseWatching     = "watching"
+)
+
+const (
+	// DefaultSavedScansDir é a pasta onde Snapshots e Autosaves são gravados.
+	DefaultSavedScansDir = "saved_scans"
+
+	// DefaultAutoSaveIntervalMinutes é o intervalo do Autosave durante a
+	// Varredura quando a Configuração não diz outro.
+	DefaultAutoSaveIntervalMinutes = 5
+
+	// WatchAutoSaveInterval é o intervalo do Autosave com Monitoramento ativo.
+	// Só grava se o contador de mudanças da árvore andou (contrato 1.7).
+	WatchAutoSaveInterval = 10 * time.Minute
+
+	// autosaveTick é o passo do único relógio de Autosave do processo. Ele só
+	// decide se algo está vencido; quem decide o intervalo é a fase corrente.
+	autosaveTick = 30 * time.Second
+)
+
+// isBusyPhase informa se a fase impede iniciar uma nova Varredura (contrato 1.2).
+func isBusyPhase(phase string) bool {
+	switch phase {
+	case PhaseMetadata, PhaseHashing, PhaseIndexing, PhaseCancelling, PhaseLoadingCache:
+		return true
+	}
+	return false
+}
+
+// currentPhase devolve a fase corrente da Varredura.
+func (s *AppServer) currentPhase() string {
+	return s.Scanner.GetStatus().Phase
+}
+
+// setPhase publica a fase e um texto de acompanhamento na interface.
+func (s *AppServer) setPhase(phase, message string) {
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.Phase = phase
+		if message != "" {
+			st.CurrentPath = message
+		}
+	})
+}
+
+// Tree devolve a árvore ativa. Nil só antes de o servidor ser construído.
+func (s *AppServer) Tree() *scanner.TreeManager {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.tree
+}
+
+// lastScanConfig devolve a Configuração da última Varredura ou do último
+// Snapshot adotado.
+func (s *AppServer) lastScanConfig() scanner.ScanConfig {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.lastConfig
+}
+
+// setScanState publica as Raízes Varridas e a Configuração de uma Varredura que
+// começa agora. A árvore não muda: a Varredura escreve na que já está ativa.
+func (s *AppServer) setScanState(roots []string, cfg scanner.ScanConfig) {
+	s.stateMu.Lock()
+	s.activeRoots = append([]string(nil), roots...)
+	s.lastConfig = cfg
+	s.stateMu.Unlock()
+}
+
+// adoptTree troca a árvore ativa junto com as Raízes e a Configuração que a
+// descrevem. Os três andam juntos: um leitor nunca pode encontrar a árvore nova
+// com as Raízes da anterior.
+func (s *AppServer) adoptTree(tm *scanner.TreeManager, roots []string, cfg scanner.ScanConfig) {
+	s.stateMu.Lock()
+	s.tree = tm
+	s.activeRoots = append([]string(nil), roots...)
+	s.lastConfig = cfg
+	s.stateMu.Unlock()
+}
+
+// changeSignal resume "algo mudou na árvore desde o último Autosave".
+//
+// O sinal soma o contador do TreeManager com o do Monitoramento porque
+// ReplaceFile e RemoveDir (pkg/scanner/tree_watch.go, propriedade do Agente B)
+// ainda não avançam o ChangeCounter da árvore; sem a segunda parcela o Autosave
+// com Monitoramento ativo nunca gravaria.
+func (s *AppServer) changeSignal() uint64 {
+	var sig uint64
+	if tree := s.Tree(); tree != nil {
+		sig += tree.ChangeCounter()
+	}
+	if fw := s.currentWatcher(); fw != nil {
+		sig += fw.ChangeCount()
+	}
+	return sig
+}
+
+// currentWatcher devolve o Monitoramento ativo sob o seu próprio lock.
+func (s *AppServer) currentWatcher() *watcher.FSWatcher {
+	s.watcherMu.Lock()
+	defer s.watcherMu.Unlock()
+	return s.Watcher
+}
+
+func (s *AppServer) setWatcher(fw *watcher.FSWatcher) {
+	s.watcherMu.Lock()
+	old := s.Watcher
+	s.Watcher = fw
+	s.watcherMu.Unlock()
+	if old != nil && old != fw {
+		old.Stop()
+	}
+}
+
+// stopWatcher encerra o Monitoramento, se houver.
+func (s *AppServer) stopWatcher() {
+	s.watcherMu.Lock()
+	fw := s.Watcher
+	s.Watcher = nil
+	s.watcherMu.Unlock()
+	if fw != nil {
+		fw.Stop()
+	}
+	s.Scanner.SetStatus(func(st *ScanStatus) { st.IsWatching = false })
+}
+
+// autoSaveDir devolve a pasta de Snapshots deste servidor.
+func (s *AppServer) autoSaveDir() string {
+	if s.savedScansDir == "" {
+		return DefaultSavedScansDir
+	}
+	return s.savedScansDir
+}
+
+// noteAutoSaveBaseline zera o relógio do Autosave: o próximo periódico só vence
+// um intervalo depois deste instante.
+func (s *AppServer) noteAutoSaveBaseline(cfg scanner.ScanConfig, now time.Time) {
+	s.autosaveMu.Lock()
+	s.autosaveConfig = cfg
+	s.lastAutoSaveAt = now
+	s.lastAutoSaveChange = s.changeSignal()
+	s.autosaveMu.Unlock()
+}
+
+// ensureAutoSaveLoop garante que existe UM relógio de Autosave no processo.
+// Chamar de novo com outra Configuração só troca a Configuração; nunca cria um
+// segundo relógio (contrato 1.7).
+func (s *AppServer) ensureAutoSaveLoop(cfg scanner.ScanConfig) {
+	s.autosaveMu.Lock()
+	s.autosaveConfig = cfg
+	if s.autosaveRunning || s.bgStopped {
+		s.autosaveMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	s.autosaveStop = stop
+	s.autosaveRunning = true
+	s.autosaveMu.Unlock()
+
+	go s.autoSaveLoop(stop)
+}
+
+func (s *AppServer) autoSaveLoop(stop chan struct{}) {
+	ticker := time.NewTicker(autosaveTick)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.maybeAutoSave(time.Now())
+			// O relógio se desliga quando não há mais nada para gravar; a
+			// próxima Varredura ou o Monitoramento o religam.
+			//
+			// A fase é lida DENTRO do lock de propósito: quem liga o relógio
+			// publica a fase nova antes de chamar ensureAutoSaveLoop, então uma
+			// chamada que encontrou o relógio ligado garante que esta leitura
+			// enxerga a fase nova e o relógio não se desliga por engano.
+			s.autosaveMu.Lock()
+			if !autoSavePhaseNeedsTicker(s.currentPhase()) && s.autosaveStop == stop {
+				s.autosaveRunning = false
+				s.autosaveStop = nil
+				s.autosaveMu.Unlock()
+				return
+			}
+			s.autosaveMu.Unlock()
+		}
+	}
+}
+
+// autoSavePhaseNeedsTicker informa se a fase ainda pede Autosave periódico.
+func autoSavePhaseNeedsTicker(phase string) bool {
+	switch phase {
+	case PhaseMetadata, PhaseHashing, PhaseIndexing, PhaseWatching:
+		return true
+	}
+	return false
+}
+
+// maybeAutoSave grava um Autosave se a fase corrente pedir e o intervalo tiver
+// vencido. Com Monitoramento ativo só grava quando o contador de mudanças
+// avançou desde o último Autosave. Devolve se gravou.
+func (s *AppServer) maybeAutoSave(now time.Time) bool {
+	phase := s.currentPhase()
+
+	s.autosaveMu.Lock()
+	cfg := s.autosaveConfig
+	last := s.lastAutoSaveAt
+	lastChange := s.lastAutoSaveChange
+	s.autosaveMu.Unlock()
+
+	var interval time.Duration
+	switch phase {
+	case PhaseMetadata, PhaseHashing, PhaseIndexing:
+		minutes := cfg.AutoSaveIntervalMinutes
+		if minutes <= 0 {
+			minutes = DefaultAutoSaveIntervalMinutes
+		}
+		interval = time.Duration(minutes) * time.Minute
+	case PhaseWatching:
+		if s.changeSignal() == lastChange {
+			return false
+		}
+		interval = WatchAutoSaveInterval
+	default:
+		// Cancelamento, idle, completed e carregamento de Snapshot não gravam.
+		return false
+	}
+
+	if !last.IsZero() && now.Sub(last) < interval {
+		return false
+	}
+
+	return s.writeAutoSave(cfg, now)
+}
+
+// autosaveTempSeq numera os arquivos temporários do Autosave. Duas gravações
+// nunca compartilham o mesmo temporário nem que escapem da exclusão mútua.
+var autosaveTempSeq atomic.Uint64
+
+// saveAutoSaveSnapshot grava o Autosave num arquivo temporário exclusivo desta
+// gravação e só então o promove a autosave_latest.sfz, rotacionando o anterior
+// para autosave_previous.sfz.
+//
+// A rotação vive aqui, e não em scanner.SaveAutoSave, porque aquela função
+// sempre passa pelo mesmo "autosave_temp.sfz": duas gravações simultâneas
+// truncavam o fluxo gzip uma da outra e a que perdesse a corrida levava o
+// último backup bom junto.
+func (s *AppServer) saveAutoSaveSnapshot(tm *scanner.TreeManager, roots []string, cfg scanner.ScanConfig) (string, error) {
+	dir := s.autoSaveDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("falha ao criar pasta de autosave: %w", err)
+	}
+
+	// A extensão ".tmp" mantém um temporário órfão (queda no meio da gravação)
+	// fora da lista de Snapshots, que só reconhece .sfz e afins.
+	tempPath := filepath.Join(dir, fmt.Sprintf("autosave_temp_%d_%d.tmp", os.Getpid(), autosaveTempSeq.Add(1)))
+	latestPath := filepath.Join(dir, scanner.DefaultAutoSaveFileName)
+	backupPath := filepath.Join(dir, scanner.BackupAutoSaveFileName)
+
+	if err := scanner.SaveCacheToFile(tm, roots, cfg, tempPath); err != nil {
+		_ = os.Remove(tempPath)
+		return "", fmt.Errorf("falha ao serializar autosave: %w", err)
+	}
+
+	if _, err := os.Stat(latestPath); err == nil {
+		_ = os.Remove(backupPath)
+		_ = os.Rename(latestPath, backupPath)
+	}
+
+	if err := os.Rename(tempPath, latestPath); err != nil {
+		// O Windows recusa o rename enquanto alguém mantém o destino aberto;
+		// nesse caso a cópia byte a byte ainda entrega um arquivo completo.
+		data, readErr := os.ReadFile(tempPath)
+		if readErr != nil {
+			_ = os.Remove(tempPath)
+			return "", fmt.Errorf("falha ao finalizar autosave atômico: %w", err)
+		}
+		if writeErr := os.WriteFile(latestPath, data, 0o644); writeErr != nil {
+			_ = os.Remove(tempPath)
+			return "", fmt.Errorf("falha ao finalizar autosave atômico: %w", writeErr)
+		}
+		_ = os.Remove(tempPath)
+	}
+
+	return latestPath, nil
+}
+
+// writeAutoSave grava o Autosave agora, atualiza o status e avisa a interface.
+// Nunca grava durante ou depois de um Cancelamento (contrato 1.2).
+//
+// Uma gravação por vez: o relógio do Autosave e as fronteiras de fase da
+// orquestração chamam este método de goroutines diferentes.
+func (s *AppServer) writeAutoSave(cfg scanner.ScanConfig, now time.Time) bool {
+	s.autosaveWriteMu.Lock()
+	defer s.autosaveWriteMu.Unlock()
+
+	// A fase é relida DEPOIS de entrar na fila: um Cancelamento pedido enquanto
+	// esta gravação esperava a anterior cancela também esta.
+	switch s.currentPhase() {
+	case PhaseCancelling, PhaseCancelled:
+		return false
+	}
+
+	tree := s.Tree()
+	if tree == nil || tree.GetTotalFileCount() == 0 {
+		return false
+	}
+
+	savedPath, err := s.saveAutoSaveSnapshot(tree, s.scanRoots(), cfg)
+	if err != nil {
+		if DebugMode {
+			log.Printf("[AUTOSAVE] falha ao gravar: %v\n", err)
+		}
+		return false
+	}
+
+	s.autosaveMu.Lock()
+	s.lastAutoSaveAt = now
+	s.lastAutoSaveChange = s.changeSignal()
+	s.autosaveMu.Unlock()
+
+	unix := now.Unix()
+	s.Scanner.SetStatus(func(st *ScanStatus) {
+		st.LastAutoSaveTime = unix
+		st.AutoSaveFilePath = savedPath
+	})
+	s.broadcastSSE("autosave_done", map[string]any{
+		"filePath": savedPath,
+		"time":     unix,
+	})
+	return true
+}
+
+// StopBackground encerra tudo que roda fora das requisições: a Varredura em
+// curso, o Monitoramento, o relógio do Autosave e o log de erros em disco.
+// É idempotente.
+//
+// O ciclo de vida (Stop, em lifecycle.go) é do Agente S3: ele precisa chamar
+// este método para que o log de erros seja finalizado (contrato 8, item 9).
+func (s *AppServer) StopBackground() {
+	s.autosaveMu.Lock()
+	if s.bgStopped {
+		s.autosaveMu.Unlock()
+	} else {
+		s.bgStopped = true
+		if s.autosaveStop != nil {
+			close(s.autosaveStop)
+			s.autosaveStop = nil
+		}
+		s.autosaveRunning = false
+		s.autosaveMu.Unlock()
+	}
+
+	s.scanMu.Lock()
+	cancel := s.scanCancel
+	s.scanMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	s.Scanner.Cancel()
 	s.Hasher.Engine.Cancel()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+
+	s.stopWatcher()
+	s.Scanner.CloseLogger()
 }
-
-func (s *AppServer) handleGetStatus(w http.ResponseWriter, r *http.Request) {
-	st := s.Scanner.GetStatus()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(st)
-}
-
-func (s *AppServer) handleGetTree(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	depthStr := r.URL.Query().Get("depth")
-	depth := 1
-	if d, err := strconv.Atoi(depthStr); err == nil && d > 0 {
-		depth = d
-	}
-
-	if DebugMode {
-		log.Printf("[DEBUG /api/tree] Consulta de árvore: path=%q depth=%d\n", path, depth)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	if path == "" {
-		// Return summary of all roots
-		rootSummaries := make([]*scanner.DirSummary, 0)
-		s.Tree.RootsLock(func(roots map[string]*scanner.DirNode) {
-			for _, rNode := range roots {
-				summary := s.Tree.GetDirSummary(rNode.Path, depth)
-				if summary != nil {
-					rootSummaries = append(rootSummaries, summary)
-				}
-			}
-		})
-		_ = json.NewEncoder(w).Encode(rootSummaries)
-		return
-	}
-
-	summary := s.Tree.GetDirSummary(path, depth)
-	if summary == nil {
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"path":        path,
-			"name":        filepath.Base(path),
-			"totalSize":   0,
-			"fileCount":   0,
-			"subDirCount": 0,
-			"subDirs":     []*scanner.DirSummary{},
-			"files":       []*scanner.FileNode{},
-		})
-		return
-	}
-
-	_ = json.NewEncoder(w).Encode(summary)
-}
-
-// Helper method on scanner.TreeManager for locked roots iteration
-func (s *AppServer) handleGetDuplicates(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	sortBy := q.Get("sortBy")
-	if sortBy == "" {
-		sortBy = "size_desc"
-	}
-	minSize, _ := strconv.ParseInt(q.Get("minSize"), 10, 64)
-	ext := q.Get("extension")
-	search := q.Get("search")
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	offset, _ := strconv.Atoi(q.Get("offset"))
-
-	filter := indexer.QueryFilter{
-		SortBy:    sortBy,
-		MinSize:   minSize,
-		Extension: ext,
-		Search:    search,
-		Limit:     limit,
-		Offset:    offset,
-	}
-
-	res := s.Index.Query(filter)
-	if res.TotalGroups == 0 {
-		// Dynamic query fallback: Rebuild using what has already been hashed in memory so far
-		allFiles := s.Tree.GetAllFiles()
-		s.Index.RebuildIndex(allFiles)
-		res = s.Index.Query(filter)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(res)
-}
-
-// handleGetIdleFiles finds stale/unused files taking up disk space
-func (s *AppServer) handleGetIdleFiles(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	minAgeDays, _ := strconv.Atoi(q.Get("minAgeDays"))
-	minSize, _ := strconv.ParseInt(q.Get("minSize"), 10, 64)
-	ext := q.Get("extension")
-	search := q.Get("search")
-	limit, _ := strconv.Atoi(q.Get("limit"))
-
-	allFiles := s.Tree.GetAllFiles()
-	summary := indexer.QueryIdleFiles(allFiles, minAgeDays, minSize, ext, search, limit)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(summary)
-}
-
-// ExtensionStat aggregates count and size per file extension.
-type ExtensionStat struct {
-	Extension  string  `json:"extension"`
-	TotalBytes int64   `json:"totalBytes"`
-	FileCount  int     `json:"fileCount"`
-	Percentage float64 `json:"percentage"`
-}
-
-func (s *AppServer) handleGetExtensionStats(w http.ResponseWriter, r *http.Request) {
-	allFiles := s.Tree.GetAllFiles()
-	extMap := make(map[string]*ExtensionStat)
-	var grandTotalBytes int64
-
-	for _, f := range allFiles {
-		ext := strings.ToLower(f.Extension)
-		if ext == "" {
-			ext = "(sem extensão)"
-		}
-		st, ok := extMap[ext]
-		if !ok {
-			st = &ExtensionStat{Extension: ext}
-			extMap[ext] = st
-		}
-		st.TotalBytes += f.Size
-		st.FileCount++
-		grandTotalBytes += f.Size
-	}
-
-	var statsList []*ExtensionStat
-	for _, st := range extMap {
-		if grandTotalBytes > 0 {
-			st.Percentage = (float64(st.TotalBytes) / float64(grandTotalBytes)) * 100.0
-		}
-		statsList = append(statsList, st)
-	}
-
-	sort.Slice(statsList, func(i, j int) bool {
-		return statsList[i].TotalBytes > statsList[j].TotalBytes
-	})
-
-	if len(statsList) > 20 {
-		statsList = statsList[:20]
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(statsList)
-}
-
-type BatchFileReq struct {
-	Paths []string `json:"paths"`
-}
-
-func (s *AppServer) handleRecycleFiles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req BatchFileReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	sizes := make(map[string]int64)
-	for _, p := range req.Paths {
-		if f := s.findFileInTree(p); f != nil {
-			sizes[p] = f.Size
-		}
-	}
-
-	res := recycle.BatchDelete(req.Paths, sizes, true)
-
-	// Update in-memory tree & index for successfully deleted items
-	for _, p := range req.Paths {
-		s.Tree.RemoveFile(p)
-		s.Index.RemoveFileFromIndex(p)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(res)
-}
-
-func (s *AppServer) handleDeleteFiles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req BatchFileReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	sizes := make(map[string]int64)
-	for _, p := range req.Paths {
-		if f := s.findFileInTree(p); f != nil {
-			sizes[p] = f.Size
-		}
-	}
-
-	res := recycle.BatchDelete(req.Paths, sizes, false)
-
-	for _, p := range req.Paths {
-		s.Tree.RemoveFile(p)
-		s.Index.RemoveFileFromIndex(p)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(res)
-}
-
-func (s *AppServer) handleGetLogs(w http.ResponseWriter, r *http.Request) {
-	s.recentLogsMu.RLock()
-	defer s.recentLogsMu.RUnlock()
-
-	logs := make([]scanner.FSEventLog, len(s.recentLogs))
-	copy(logs, s.recentLogs)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(logs)
-}
-
-func (s *AppServer) findFileInTree(filePath string) *scanner.FileNode {
-	dir := filepath.Dir(filePath)
-	node := s.Tree.FindDir(dir)
-	if node == nil {
-		return nil
-	}
-	for _, f := range node.Files {
-		if f.Path == filePath {
-			return f
-		}
-	}
-	return nil
-}
-
-func (s *AppServer) handleListErrorLogs(w http.ResponseWriter, r *http.Request) {
-	list, err := scanner.ListDiskErrorLogs("logs")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Erro ao listar logs de erro: %v", err), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(list)
-}
-
-func (s *AppServer) handleGetActiveErrorLog(w http.ResponseWriter, r *http.Request) {
-	var currentPath string
-	if s.Scanner.DiskLogger != nil {
-		currentPath = s.Scanner.DiskLogger.GetFilePath()
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"activeLogPath": currentPath,
-		"errorsCount":   s.Scanner.GetStatus().ErrorsCount,
-	})
-}
-
-func (s *AppServer) handleGetPrivileges(w http.ResponseWriter, r *http.Request) {
-	status := privileges.CheckPrivilegeStatus()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status)
-}
-
-func (s *AppServer) handleElevateProcess(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	err := privileges.RelaunchAsAdmin()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Falha ao solicitar elevação UAC: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status":  "elevating",
-		"message": "Nova janela solicitada como Administrador com permissões completas.",
-	})
-}
-
-func (s *AppServer) handleConfig(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method == http.MethodPost {
-		var cfg config.AppConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-			http.Error(w, "Invalid configuration format: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := config.SaveConfig(cfg); err != nil {
-			http.Error(w, "Failed to save configuration: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
-		return
-	}
-
-	cfg := config.LoadConfig()
-	_ = json.NewEncoder(w).Encode(cfg)
-}
-
-

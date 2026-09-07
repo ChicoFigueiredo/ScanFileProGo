@@ -12,21 +12,9 @@ func TestTreeManager_AddAndBubbleSize(t *testing.T) {
 		t.Fatal("expected root node to be created")
 	}
 
-	file1 := &FileNode{
-		Path:      "C:\\Folder1\\file1.txt",
-		Name:      "file1.txt",
-		Size:      1000,
-		ModTime:   1700000000,
-		Extension: ".txt",
-	}
+	file1 := NewFileNodeAt("C:\\Folder1\\file1.txt", FileMeta{Name: "file1.txt", Size: 1000, ModTime: 1700000000, Extension: ".txt"})
 
-	file2 := &FileNode{
-		Path:      "C:\\Folder1\\Subfolder\\file2.mp4",
-		Name:      "file2.mp4",
-		Size:      5000,
-		ModTime:   1700000100,
-		Extension: ".mp4",
-	}
+	file2 := NewFileNodeAt("C:\\Folder1\\Subfolder\\file2.mp4", FileMeta{Name: "file2.mp4", Size: 5000, ModTime: 1700000100, Extension: ".mp4"})
 
 	tm.AddFile(file1)
 	tm.AddFile(file2)
@@ -47,7 +35,7 @@ func TestTreeManager_AddAndBubbleSize(t *testing.T) {
 	}
 
 	// Test RemoveFile
-	removedSize, found := tm.RemoveFile(file1.Path)
+	removedSize, found := tm.RemoveFile(file1.Path())
 	if !found || removedSize != 1000 {
 		t.Fatalf("expected removedSize 1000 and found=true, got %d, %v", removedSize, found)
 	}
@@ -59,8 +47,8 @@ func TestTreeManager_AddAndBubbleSize(t *testing.T) {
 
 func TestTreeManager_GetDirSummary(t *testing.T) {
 	tm := NewTreeManager()
-	tm.AddFile(&FileNode{Path: "C:\\FolderA\\f1.bin", Name: "f1.bin", Size: 200})
-	tm.AddFile(&FileNode{Path: "C:\\FolderB\\f2.bin", Name: "f2.bin", Size: 800})
+	tm.AddFile(NewFileNodeAt("C:\\FolderA\\f1.bin", FileMeta{Name: "f1.bin", Size: 200}))
+	tm.AddFile(NewFileNodeAt("C:\\FolderB\\f2.bin", FileMeta{Name: "f2.bin", Size: 800}))
 
 	summary := tm.GetDirSummary("C:\\", 1)
 	if summary == nil {

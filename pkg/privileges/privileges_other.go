@@ -2,7 +2,14 @@
 
 package privileges
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
+
+// errUnsupported is returned by every elevation entry point: outside Windows
+// there is no UAC and no process token to adjust.
+var errUnsupported = errors.New("elevação não suportada nesta plataforma")
 
 type PrivilegeStatus struct {
 	IsAdmin         bool            `json:"isAdmin"`
@@ -29,14 +36,24 @@ func EnableAllBackupPrivileges() (map[string]bool, error) {
 }
 
 func RelaunchAsAdmin() error {
-	return errors.New("elevação não suportada nesta plataforma")
+	return errUnsupported
 }
 
 func RelaunchAsAdminWithIPC(rawArgs []string) error {
-	return errors.New("elevação não suportada nesta plataforma")
+	return errUnsupported
+}
+
+// LaunchElevatedHandoff cannot elevate here, so it reports the failure instead
+// of pretending a child was started.
+func LaunchElevatedHandoff(args []string) (uint32, error) {
+	return 0, errUnsupported
+}
+
+// WaitForProcessExit is not implemented outside Windows.
+func WaitForProcessExit(pid uint32, timeout time.Duration) error {
+	return errUnsupported
 }
 
 func MonitorParentProcess(parentPID int) {
-	// No-op on non-Windows
+	// No-op on non-Windows: there is no elevated child to keep in step.
 }
-

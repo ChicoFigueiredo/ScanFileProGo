@@ -4,101 +4,170 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ScanFile Pro - Análise de Disco, Hash e Monitoramento em Tempo Real</title>
+  <meta name="scanfile-token" content="{{SCANFILE_TOKEN}}">
   <link rel="stylesheet" href="css/styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
-<body class="dark-theme">
-  <!-- Top Navigation / App Header -->
+<body class="dark-theme">  <!-- Top Navigation / App Header -->
   <header class="app-header">
-    <div class="header-brand">
-      <div class="brand-logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-          <line x1="12" y1="11" x2="12" y2="17"></line>
-          <line x1="9" y1="14" x2="15" y2="14"></line>
-        </svg>
-      </div>
-      <div class="brand-title">
-        <h1>ScanFile <span>Pro</span></h1>
-        <p class="subtitle">Analisador de Disco Multithread & Deduplicação por Hash</p>
-      </div>
-    </div>
-
-    <!-- Cache Management, Privilege & Live Status -->
-    <div class="header-status-group">
-      <div id="privilegeBadge" class="privilege-badge admin" title="Permissões de Segurança do Windows">
-        <span id="privilegeIcon">👑</span>
-        <span id="privilegeText">Verificando Privilégios...</span>
-        <button id="btnElevateAdmin" class="btn-elevate-admin hidden" title="Reiniciar como Administrador para acesso total">⚡ Elevar</button>
-      </div>
-
-      <div class="cache-header-actions">
-        <button id="btnOpenSaveCacheModal" class="btn btn-secondary btn-sm" title="Salvar snapshot da árvore e hashes em disco">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-          Salvar Cache
-        </button>
-        <button id="btnOpenLoadCacheModal" class="btn btn-secondary btn-sm" title="Carregar snapshot salvo de varredura anterior">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-          Carregar Cache
-        </button>
-      </div>
-
-      <!-- UI Zoom Controls -->
-      <div class="ui-zoom-controls" title="Controle de Zoom da Interface">
-        <button id="btnZoomOut" class="btn-zoom" title="Diminuir Zoom da Interface">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        </button>
-        <span id="zoomLevelDisplay" class="zoom-display" title="Clique para redefinir para 100%">100%</span>
-        <button id="btnZoomIn" class="btn-zoom" title="Aumentar Zoom da Interface">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        </button>
-      </div>
-
-      <div class="header-status">
-        <div id="liveBadge" class="status-badge idle">
-          <span class="pulse-dot"></span>
-          <span id="liveStatusText">Pronto</span>
+    <div class="header-top-row">
+      <!-- Brand Logo and Title -->
+      <div class="header-brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            <line x1="12" y1="11" x2="12" y2="17"></line>
+            <line x1="9" y1="14" x2="15" y2="14"></line>
+          </svg>
+        </div>
+        <div class="brand-title">
+          <div class="brand-title-line">
+            <h1>ScanFile</h1>
+            <span class="pro-badge">PRO</span>
+          </div>
+          <p class="subtitle">Analisador de Disco Multithread & Deduplicação por Hash</p>
         </div>
       </div>
+
+      <!-- Functional Control Groups -->
+      <div class="header-controls">
+        
+        <!-- Group 1: Telemetria & Status -->
+        <div class="control-group" title="Monitoramento e Permissões do Sistema">
+          <div class="group-label">Sistema & RAM</div>
+          <div class="group-content">
+            <!-- Memory Telemetry Widget -->
+            <div id="memoryStatusWidget" class="memory-status-widget" title="Telemetria de Memória RAM em Tempo Real (Processo vs Sistema Operacional)">
+              <div class="memory-widget-icon">⚡</div>
+              <div class="memory-widget-info">
+                <div class="memory-widget-header">
+                  <span class="memory-label">App: <strong id="memAppUsage">0 MB</strong></span>
+                  <span class="memory-sublabel" id="memSysUsage">SO: 0 / 0 GB (0%)</span>
+                </div>
+                <div class="memory-track">
+                  <div id="memoryBarFill" class="memory-fill" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Privilege Badge -->
+            <div id="privilegeBadge" class="privilege-badge admin" title="Permissões de Segurança do Windows">
+              <span id="privilegeIcon">👑</span>
+              <span id="privilegeText">Verificando...</span>
+              <button id="btnElevateAdmin" class="btn-elevate-admin hidden" title="Reiniciar como Administrador para acesso total">⚡ Elevar</button>
+            </div>
+
+            <!-- Global Status Pill -->
+            <div id="liveBadge" class="status-badge idle">
+              <span class="pulse-dot"></span>
+              <span id="liveStatusText">Pronto</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 2: Snapshot & Cache -->
+        <div class="control-group" title="Gerenciamento de Snapshots de Varredura">
+          <div class="group-label">Snapshots</div>
+          <div class="group-content">
+            <button id="btnOpenSaveCacheModal" class="btn btn-secondary btn-sm" title="Salvar snapshot da árvore e hashes em disco">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+              Salvar
+            </button>
+            <button id="btnOpenLoadCacheModal" class="btn btn-secondary btn-sm" title="Carregar snapshot salvo de varredura anterior">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+              Carregar
+            </button>
+          </div>
+        </div>
+
+        <!-- Group 3: Exibição & Zoom -->
+        <div class="control-group" title="Zoom da Interface">
+          <div class="group-label">Zoom</div>
+          <div class="group-content">
+            <div class="ui-zoom-controls">
+              <button id="btnZoomOut" class="btn-zoom" title="Diminuir Zoom">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+              <span id="zoomLevelDisplay" class="zoom-display" title="Clique para redefinir para 100%">100%</span>
+              <button id="btnZoomIn" class="btn-zoom" title="Aumentar Zoom">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 4: Tema Visual -->
+        <div class="control-group" title="Tema Visual">
+          <div class="group-label">Tema</div>
+          <div class="group-content">
+            <select id="themeSelector" class="form-select form-select-sm theme-select">
+              <optgroup label="🍂 Temas Ocres">
+                <option value="theme-ochre-dark" selected>🍂 Ocre Noturno</option>
+                <option value="theme-ochre-sand">🏜️ Ocre Areia Dourada</option>
+                <option value="theme-ochre-terracotta">🏺 Ocre Terracota</option>
+                <option value="theme-ochre-autumn">🍁 Ocre Outono</option>
+              </optgroup>
+              <optgroup label="☀️ Temas Claros">
+                <option value="theme-light-snow">❄️ Claro Neve</option>
+                <option value="theme-light-sand">🏖️ Claro Areia & Linho</option>
+                <option value="theme-light-nordic">🧊 Claro Nórdico</option>
+                <option value="theme-light-paper">📜 Claro Pergaminho</option>
+              </optgroup>
+              <optgroup label="🌌 Temas Escuros (Dark)">
+                <option value="theme-dark-obsidian">🌌 Obsidian Slate</option>
+                <option value="theme-dark-oled">⬛ Midnight OLED</option>
+                <option value="theme-dark-cyber">⚡ Cyber Graphite</option>
+                <option value="theme-dark-dracula">🧛 Dracula Deep</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
+      </div>
     </div>
 
-    <!-- Navigation Tabs -->
-    <nav class="nav-tabs">
-      <button class="nav-tab active" data-tab="drivesTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
-        Discos & Varredura
-      </button>
-      <button class="nav-tab" data-tab="treeTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-        Gráfico & Árvore
-      </button>
-      <button class="nav-tab" data-tab="duplicatesTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-        Duplicados por Hash
-        <span id="dupCountBadge" class="badge-counter hidden">0</span>
-      </button>
-      <button class="nav-tab" data-tab="foldersTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><path d="M12 11v6"></path><path d="M9 14h6"></path></svg>
-        Comparador de Pastas
-        <span id="folderDupCountBadge" class="badge-counter hidden">0</span>
-      </button>
-      <button class="nav-tab" data-tab="analyticsTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
-        Distribuição
-      </button>
-      <button class="nav-tab" data-tab="idleTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 10"></polyline></svg>
-        Arquivos Ociosos
-      </button>
-      <button class="nav-tab" data-tab="watcherTab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-        Monitor do SO
-        <span id="eventCountBadge" class="badge-counter">0</span>
-      </button>
-    </nav>
+    <!-- Navigation Tabs Row -->
+    <div class="header-nav-row">
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="drivesTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+          Discos & Varredura
+        </button>
+        <button class="nav-tab" data-tab="treeTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          Gráfico & Árvore
+        </button>
+        <button class="nav-tab" data-tab="duplicatesTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          Duplicados por Hash
+          <span id="dupCountBadge" class="badge-counter hidden">0</span>
+        </button>
+        <button class="nav-tab" data-tab="foldersTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><path d="M12 11v6"></path><path d="M9 14h6"></path></svg>
+          Comparador de Pastas
+          <span id="folderDupCountBadge" class="badge-counter hidden">0</span>
+        </button>
+        <button class="nav-tab" data-tab="analyticsTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+          Distribuição
+        </button>
+        <button class="nav-tab" data-tab="idleTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 10"></polyline></svg>
+          Arquivos Ociosos
+        </button>
+        <button class="nav-tab" data-tab="watcherTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+          Monitor do SO
+          <span id="eventCountBadge" class="badge-counter">0</span>
+        </button>
+        <button class="nav-tab ai-tab-btn" data-tab="aiTab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path><rect x="3" y="8" width="18" height="12" rx="2"></rect><circle cx="9" cy="13" r="1.5"></circle><circle cx="15" cy="13" r="1.5"></circle><path d="M9 17h6"></path></svg>
+          Assistente IA
+          <span class="badge-ai-mcp">MCP</span>
+        </button>
+      </nav>
+    </div>
   </header>
+
 
   <!-- Main Content Area -->
   <main class="app-main">
@@ -130,17 +199,17 @@
           <div class="config-group">
             <label for="workerThreads">Threads de Varredura:</label>
             <select id="workerThreads" class="form-select">
-              <option value="4">4 Threads</option>
-              <option value="8" selected>8 Threads (Recomendado)</option>
-              <option value="16">16 Threads (Alto Desempenho)</option>
-              <option value="32">32 Threads (Varredura Extrema)</option>
+              <option value="0" selected>Auto (definido pelo servidor)</option>
             </select>
+            <small class="form-hint" id="workerThreadsHint">Consultando os núcleos do processador...</small>
           </div>
 
           <div class="config-group">
             <label for="hashAlgo">Algoritmo de Hash:</label>
             <select id="hashAlgo" class="form-select">
-              <option value="xxhash" selected>xxHash64 (Ultra Rápido - 10+ GB/s)</option>
+              <option value="xxhash" selected>xxHash64 (Ultra Rápido - padrão)</option>
+              <option value="blake3">BLAKE3 (Rápido e Criptográfico)</option>
+              <option value="md5">MD5 (Compatibilidade)</option>
               <option value="sha256">SHA-256 (Criptográfico Seguro)</option>
             </select>
           </div>
@@ -162,17 +231,49 @@
               <option value="10485760">Acima de 10 MB</option>
             </select>
           </div>
+
+          <div class="config-group">
+            <label for="autoSaveInterval">Auto-Save do Cache:</label>
+            <select id="autoSaveInterval" class="form-select">
+              <option value="5" selected>💾 A cada 5 minutos (Recomendado)</option>
+              <option value="2">💾 A cada 2 minutos (Frequente)</option>
+              <option value="10">💾 A cada 10 minutos</option>
+              <option value="15">💾 A cada 15 minutos</option>
+              <option value="0">Desativado</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- AutoSave Detection Banner -->
+        <div id="autoSaveBanner" class="autosave-card-banner hidden">
+          <div class="autosave-card-left">
+            <span class="autosave-icon">💾</span>
+            <div class="autosave-text">
+              <strong>Scan Salvo Automaticamente Detectado</strong>
+              <span id="autoSaveDetailsText">Arquivo: autosave_latest.sfz &bull; Salvo recentemente</span>
+            </div>
+          </div>
+          <div class="autosave-actions">
+            <button id="btnBannerRestore" class="btn btn-primary btn-sm">Abrir Cache</button>
+            <button id="btnBannerQuickScan" class="btn btn-quick-scan btn-sm">⚡ Quick Scan</button>
+            <button id="btnBannerDismiss" class="btn btn-secondary btn-sm" title="Ignorar">✕</button>
+          </div>
         </div>
 
         <div class="scan-actions-bar">
-          <button id="btnStartScan" class="btn btn-primary btn-lg">
+          <button id="btnStartScan" class="btn btn-primary btn-lg" title="Inicia varredura completa de metadados e hashes">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-            Iniciar Varredura Multithread
+            Iniciar Varredura Completa
+          </button>
+          <button id="btnQuickScan" class="btn btn-quick-scan btn-lg" title="Atualização Rápida: reaproveita hashes de arquivos inalterados (mesmo caminho, tamanho e data)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            ⚡ Quick Scan (Atualização Rápida)
           </button>
           <button id="btnCancelScan" class="btn btn-danger btn-lg hidden">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"></rect></svg>
             Cancelar Varredura
           </button>
+          <span id="scanPhaseText" class="scan-phase-text">Ocioso</span>
         </div>
       </div>
 
@@ -181,7 +282,10 @@
         <div class="hud-header">
           <div class="hud-phase-row">
             <div class="hud-phase-badge" id="hudPhaseBadge">Fase 1: Mapeamento de Metadados</div>
+            <div id="hudQuickScanBadge" class="hud-quick-badge hidden">⚡ Quick Scan (Incremental)</div>
+            <div id="hudAutoSaveBadge" class="hud-autosave-badge hidden">💾 Auto-Salvo</div>
             <div id="hudErrorsBadge" class="hud-error-badge hidden">0 Arquivos Bloqueados / Ignorados</div>
+            <div id="hudWorkersBadge" class="hud-workers-badge hidden">Threads efetivas</div>
           </div>
           <div class="hud-stats-row">
             <div class="hud-stat-box">
@@ -200,6 +304,14 @@
               <span class="stat-label">Físico em Disco</span>
               <span class="stat-val" id="statAllocatedBytes">0 B</span>
             </div>
+            <div class="hud-stat-box" id="boxReusedFiles" style="display: none;">
+              <span class="stat-label">Reaproveitados</span>
+              <span class="stat-val" id="statReusedFiles" style="color: #fbbf24;">0</span>
+            </div>
+            <div class="hud-stat-box" id="boxNewModifiedFiles" style="display: none;">
+              <span class="stat-label">Novos / Modificados</span>
+              <span class="stat-val" id="statNewModifiedFiles" style="color: #38bdf8;">0</span>
+            </div>
             <div class="hud-stat-box">
               <span class="stat-label">Comprimidos (NTFS)</span>
               <span class="stat-val" id="statCompressedCount">0</span>
@@ -207,6 +319,14 @@
             <div class="hud-stat-box">
               <span class="stat-label">Economia / Ganho</span>
               <span class="stat-val" id="statCompressedSaved" style="color: #34d399;">0 B</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Itens Pulados</span>
+              <span class="stat-val" id="statSkipped">0</span>
+            </div>
+            <div class="hud-stat-box">
+              <span class="stat-label">Pré-hash</span>
+              <span class="stat-val" id="statPrehash">0</span>
             </div>
             <div class="hud-stat-box">
               <span class="stat-label">Velocidade</span>
@@ -308,14 +428,23 @@
               </select>
             </div>
 
-            <!-- Depth Slider (2 to 20 levels) -->
+            <!-- Depth Slider (1 to 10 levels) -->
             <div class="depth-slider-wrap">
               <label for="treemapDepth">Profundidade: <strong id="treemapDepthVal" class="depth-val-badge">5 níveis</strong></label>
-              <input type="range" id="treemapDepth" min="2" max="20" value="5" class="range-slider">
+              <input type="range" id="treemapDepth" min="1" max="10" value="5" class="range-slider">
+            </div>
+
+            <div class="treemap-color-select-wrap">
+              <label for="treeFilesSortBy">Arquivos:</label>
+              <select id="treeFilesSortBy" class="form-select form-select-sm" title="Ordem da tabela paginada de arquivos da pasta atual">
+                <option value="size_desc" selected>Maior tamanho</option>
+                <option value="name_asc">Nome (A-Z)</option>
+                <option value="mod_desc">Modificados recentemente</option>
+              </select>
             </div>
 
             <div class="tree-search-wrap">
-              <input type="text" id="treeSearchInput" class="form-input form-input-sm" placeholder="Buscar na árvore...">
+              <input type="text" id="treeSearchInput" class="form-input form-input-sm" placeholder="Buscar na página atual...">
             </div>
 
             <button id="btnTreeMaxHeight" class="btn btn-secondary btn-sm" title="Expandir Altura Máxima da Tela">
@@ -353,6 +482,8 @@
                 </tbody>
               </table>
             </div>
+            <div id="treeFilesHint" class="tree-files-hint">As subpastas vêm inteiras; os arquivos são paginados de 100 em 100 pelo servidor.</div>
+            <div id="treePaginationBar" class="pagination-bar"></div>
           </div>
 
           <!-- Interactive Draggable Splitter -->
@@ -465,6 +596,10 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               Mandar para Lixeira do Windows
             </button>
+
+            <button id="btnDeleteSelectedDups" class="btn btn-permanent-delete btn-sm" disabled title="Exclusão Permanente: os arquivos NÃO vão para a Lixeira e não podem ser restaurados">
+              ⛔ Excluir permanentemente
+            </button>
           </div>
         </div>
 
@@ -472,6 +607,7 @@
         <div id="duplicatesContainer" class="duplicates-container">
           <div class="empty-state">Nenhum duplicado indexado ainda. Realize uma varredura para identificar arquivos idênticos por hash.</div>
         </div>
+        <div id="dupPaginationBar" class="pagination-bar"></div>
       </div>
     </section>
 
@@ -515,10 +651,12 @@
           <div class="dup-toolbar">
             <div class="dup-filters">
               <select id="dupFolderSortBy" class="form-select form-select-sm">
-                <option value="wasted_desc" selected>Maior Espaço Desperdiçado</option>
-                <option value="size_desc">Maior Tamanho de Pasta</option>
-                <option value="count_desc">Mais Cópias de Pastas</option>
-                <option value="name_asc">Nome da Pasta (A-Z)</option>
+                <option value="subdirs_desc" selected>🌳 Mais Subpastas / Níveis (Maior Hierarquia)</option>
+                <option value="wasted_desc">💰 Maior Espaço Desperdiçado</option>
+                <option value="files_desc">📄 Mais Arquivos Contidos</option>
+                <option value="size_desc">💾 Maior Tamanho de Pasta</option>
+                <option value="count_desc">👯 Mais Cópias de Pastas</option>
+                <option value="name_asc">🔤 Nome da Pasta (A-Z)</option>
               </select>
 
               <select id="dupFolderMinSize" class="form-select form-select-sm">
@@ -530,6 +668,11 @@
               </select>
 
               <input type="text" id="dupFolderSearch" class="form-input form-input-sm" placeholder="Buscar no caminho da pasta...">
+
+              <label class="form-checkbox-label" title="Ocultar subpastas que já estão contidas dentro de uma pasta clone maior (ex: mostra apenas a pasta raiz do clone)" style="display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; color: var(--text-primary); cursor: pointer; user-select: none; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.35rem 0.65rem; border-radius: var(--radius-sm);">
+                <input type="checkbox" id="chkFolderTopLevelOnly" checked style="width: 15px; height: 15px; accent-color: var(--accent-cyan); cursor: pointer;">
+                <span style="font-weight: 600;">⭐ Apenas Pastas Raiz (Ocultar Subpastas)</span>
+              </label>
             </div>
             <div class="dup-batch-actions">
               <button id="btnRefreshFolderDuplicates" class="btn btn-secondary btn-sm">Atualizar Pastas</button>
@@ -540,7 +683,9 @@
           <div id="folderDuplicatesContainer" class="duplicates-container">
             <div class="empty-state">Nenhuma pasta duplicada encontrada. Realize uma varredura para identificar pastas com conteúdo idêntico.</div>
           </div>
+          <div id="folderDupPaginationBar" class="pagination-bar"></div>
         </div>
+
 
         <!-- SUBTAB 2: SIDE-BY-SIDE FOLDER COMPARATOR -->
         <div id="folderCompareSubtab" class="folder-subtab-pane">
@@ -657,6 +802,12 @@
               <option value="0">Qualquer Tamanho</option>
             </select>
 
+            <select id="idleSortBy" class="form-select form-select-sm">
+              <option value="size_desc" selected>Maior Tamanho</option>
+              <option value="days_desc">Mais Antigos (Inatividade)</option>
+              <option value="name_asc">Nome do Arquivo (A-Z)</option>
+            </select>
+
             <input type="text" id="idleSearch" class="form-input form-input-sm" placeholder="Buscar no caminho / extensão...">
             <button id="btnRefreshIdle" class="btn btn-secondary btn-sm">Filtrar</button>
           </div>
@@ -667,6 +818,10 @@
             <button id="btnRecycleIdleSelected" class="btn btn-danger btn-sm" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               Mandar para Lixeira do Windows
+            </button>
+
+            <button id="btnDeleteIdleSelected" class="btn btn-permanent-delete btn-sm" disabled title="Exclusão Permanente: os arquivos NÃO vão para a Lixeira e não podem ser restaurados">
+              ⛔ Excluir permanentemente
             </button>
           </div>
         </div>
@@ -691,8 +846,10 @@
             </tbody>
           </table>
         </div>
+        <div id="idlePaginationBar" class="pagination-bar"></div>
       </div>
     </section>
+
 
     <!-- TAB 7: REALTIME OS WATCHER -->
     <section id="watcherTab" class="tab-pane">
@@ -703,16 +860,17 @@
             <p>Hooks nativos do Windows (ReadDirectoryChangesW) sincronizam adições, modificações e exclusões na memória</p>
           </div>
           <div class="section-actions">
+            <button id="btnRefreshEventLogs" class="btn btn-secondary btn-sm">Atualizar Eventos</button>
             <button id="btnClearLogs" class="btn btn-secondary btn-sm">Limpar Histórico</button>
           </div>
         </div>
 
-        <div class="watcher-status-card">
+        <div class="watcher-status-card" id="watcherStatusCard">
           <div class="watcher-indicator">
             <span class="pulse-beacon"></span>
             <div>
-              <strong id="watcherStateTitle">Monitoramento Ativo</strong>
-              <p id="watcherStateDesc">Ouvindo alterações nos discos varridos em tempo real</p>
+              <strong id="watcherStateTitle">Monitoramento inativo</strong>
+              <p id="watcherStateDesc">O Monitoramento começa depois de uma Varredura Completa</p>
             </div>
           </div>
         </div>
@@ -734,10 +892,194 @@
             </tbody>
           </table>
         </div>
+
+        <!-- Itens Pulados pela Varredura (/api/logs/skipped) -->
+        <div class="section-header skipped-section-header">
+          <div class="section-title">
+            <h2>Itens Pulados pela Varredura</h2>
+            <p>Pastas e arquivos que a Varredura decidiu não percorrer, sempre com o motivo registrado</p>
+          </div>
+          <div class="section-actions">
+            <span id="skippedCountBadge" class="badge-pill">0 itens</span>
+            <button id="btnRefreshSkipped" class="btn btn-secondary btn-sm">Atualizar Lista</button>
+          </div>
+        </div>
+
+        <div class="event-logs-table-wrapper">
+          <table class="event-logs-table">
+            <thead>
+              <tr>
+                <th style="width: 140px;">Horário</th>
+                <th>Caminho</th>
+                <th style="width: 280px;">Motivo</th>
+              </tr>
+            </thead>
+            <tbody id="skippedItemsTableBody">
+              <tr>
+                <td colspan="3" class="empty-state">Nenhum item pulado registrado nesta execução.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 8: AI ASSISTANT & MCP AGENT -->
+    <section id="aiTab" class="tab-pane">
+      <div class="ai-container">
+        <!-- AI Top Bar Controls -->
+        <div class="ai-top-bar">
+          <div class="ai-provider-selector">
+            <span class="ai-control-label">Provedor:</span>
+            <div class="ai-btn-group">
+              <button class="btn btn-sm btn-ai-provider active" data-provider="ollama">
+                <span class="provider-dot online" id="ollamaStatusDot"></span> 🦙 Ollama Local
+              </button>
+              <button class="btn btn-sm btn-ai-provider" data-provider="openrouter">
+                <span class="provider-dot" id="openrouterStatusDot"></span> 🌐 OpenRouter (Nuvem)
+              </button>
+              <button class="btn btn-sm btn-ai-provider" data-provider="quick">
+                <span class="provider-dot online" id="quickStatusDot"></span> ⚡ Comandos Rápidos (sem modelo)
+              </button>
+            </div>
+          </div>
+
+          <div class="ai-model-selector-group">
+            <span class="ai-control-label">Modelo Selecionado:</span>
+            <div class="select-with-btn">
+              <select id="aiModelSelect" class="form-select form-select-sm">
+                <option value="">Carregando catálogo...</option>
+              </select>
+              <button id="btnPullSelectedModel" class="btn btn-secondary btn-sm hidden" title="Baixar modelo local no Ollama">
+                ⬇️ Baixar Modelo
+              </button>
+            </div>
+          </div>
+
+          <div class="ai-top-actions">
+            <button id="btnOpenAIConfigModal" class="btn btn-secondary btn-sm" title="Configurações de IA e Chaves de API">
+              ⚙️ Configurações de IA
+            </button>
+          </div>
+        </div>
+
+        <!-- Pull Progress Bar (Visible during download) -->
+        <div id="aiPullProgressContainer" class="ai-pull-progress-card hidden">
+          <div class="pull-progress-header">
+            <span id="pullModelTitle">Baixando modelo...</span>
+            <span id="pullModelPercent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="pullProgressBar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <small id="pullModelStatus" class="pull-status-text">Iniciando download via Ollama daemon...</small>
+        </div>
+
+        <!-- Main AI Workspace (Chat + Side Catalog) -->
+        <div class="ai-workspace">
+          <!-- Left: Chat View -->
+          <div class="ai-chat-card">
+            <div class="ai-chat-header">
+              <div class="ai-chat-title">
+                <h3>💬 Agente ReAct & Ferramentas MCP</h3>
+                <p>O assistente pode classificar arquivos, inspecionar PDFs/SQLite e propor ações com segurança</p>
+              </div>
+              <div class="ai-chat-header-actions">
+                <button id="btnClearAIChat" class="btn btn-secondary btn-sm">Limpar Conversa</button>
+              </div>
+            </div>
+
+            <!-- Messages Stream Container -->
+            <div id="aiMessagesContainer" class="ai-messages-feed">
+              <div class="ai-welcome-message">
+                <div class="ai-avatar">👁️</div>
+                <div class="ai-bubble">
+                  <h4>Olá! Sou o Assistente do ScanFile Pro.</h4>
+                  <p>Com o modelo certo eu leio imagens, faturas, bancos SQLite e PDFs dentro das Raízes Varridas e monto Propostas de limpeza. <strong>Toda Proposta fica pendente até você aprovar na interface</strong>: nenhuma ação é executada por minha conta.</p>
+                  <div class="ai-quick-prompts">
+                    <button class="ai-prompt-chip" data-prompt="Inspecione visualmente as imagens e fotos desta pasta e resuma o que são">
+                      👁️ Inspecionar Imagens &amp; Fotos
+                    </button>
+                    <button class="ai-prompt-chip" data-prompt="Faça OCR e extraia textos e valores dos documentos e faturas encontrados">
+                      📄 OCR em Faturas &amp; PDFs
+                    </button>
+                    <button class="ai-prompt-chip" data-prompt="Ache todas as duplicatas maiores que 50MB e gere uma proposta de limpeza">
+                      🔍 Achar duplicatas &gt; 50MB
+                    </button>
+                    <button class="ai-prompt-chip" data-prompt="Classifique os maiores arquivos deste disco por tipo e resuma o espaço">
+                      📊 Classificar Maiores Arquivos
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chat Input Area -->
+            <div class="ai-input-area">
+              <div class="ai-input-wrapper">
+                <textarea id="aiPromptInput" class="ai-textarea" rows="2" placeholder="Peça para a IA classificar arquivos, inspecionar documentos ou sugerir limpezas... (Pressione Enter para enviar)"></textarea>
+                <button id="btnSendAIMessage" class="btn btn-primary btn-ai-send">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                  Enviar
+                </button>
+              </div>
+              <div class="ai-input-footer">
+                <span class="ai-footer-hint">🔒 Toda Proposta nasce pendente. <strong>Nada é executado sem a sua aprovação explícita</strong> nesta janela.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Models Catalog (up to 16GB) -->
+          <div class="ai-catalog-card">
+            <div class="ai-catalog-header">
+              <h4>📚 Catálogo de Modelos (até 14 GB)</h4>
+              <p>Selos de <strong>Visão</strong> e <strong>Ferramentas</strong> indicam o que cada modelo consegue fazer</p>
+            </div>
+            <div id="aiModelsList" class="ai-models-list">
+              <!-- Dynamically rendered via JS -->
+              <div class="loading-state">Carregando catálogo de modelos...</div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
   </main>
+
+  <!-- AI Settings Modal -->
+  <div id="aiConfigModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>⚙️ Configurações de IA & Modelos</h3>
+        <button class="modal-close-btn" data-close-modal="aiConfigModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="aiOllamaEndpointInput">Endpoint do Ollama Local:</label>
+          <input type="text" id="aiOllamaEndpointInput" class="form-input" placeholder="http://127.0.0.1:11434">
+          <small class="form-hint">Onde seu daemon do Ollama está rodando localmente</small>
+        </div>
+        <div class="form-group">
+          <label for="aiOpenRouterKeyInput">Chave de API do OpenRouter (Opcional):</label>
+          <input type="password" id="aiOpenRouterKeyInput" class="form-input" placeholder="sk-or-v1-..." autocomplete="off">
+          <small class="form-hint" id="aiOpenRouterKeyHint">A chave nunca é devolvida pelo servidor. Deixe em branco para manter a atual.</small>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="aiDryRunDefaultCheckbox" checked>
+            <span>Exigir confirmação prévia com simulação antes de qualquer exclusão</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <button id="btnClearOpenRouterKey" class="btn btn-secondary btn-sm hidden">Remover chave salva</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal="aiConfigModal">Cancelar</button>
+        <button id="btnSaveAIConfig" class="btn btn-primary">Salvar Configurações</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Save Cache Modal -->
   <div id="saveCacheModal" class="modal-overlay hidden">
@@ -787,9 +1129,124 @@
     </div>
   </div>
 
+  <!-- Global Operation Progress & Action Lock Overlay -->
+  <div id="globalProgressOverlay" class="global-progress-overlay hidden">
+    <div class="global-progress-card">
+      <div class="progress-card-top">
+        <div class="progress-spinner-ring">
+          <div class="spin-circle"></div>
+        </div>
+        <div class="progress-title-meta">
+          <h3 id="globalProgressTitle">Carregando Snapshot de Cache para a Memória...</h3>
+          <p id="globalProgressDesc">Descompactando arquivo Gzip (.scanfile.gz) e reconstruindo índices de hash...</p>
+        </div>
+      </div>
+
+      <!-- Main Progress Bar -->
+      <div class="progress-track-wrapper">
+        <div class="progress-bar-track">
+          <div id="globalProgressBar" class="progress-bar-fill animated-shimmer" style="width: 0%;"></div>
+        </div>
+        <div class="progress-metrics-row">
+          <span id="globalProgressPercent" class="progress-pct-badge">0%</span>
+          <span id="globalProgressDetail" class="progress-detail-info">Processando estrutura em background...</span>
+        </div>
+      </div>
+
+      <div class="progress-lock-banner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px; height:16px; flex-shrink:0;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        <span>Operação crítica em andamento — Controles bloqueados preventivamente para garantir integridade.</span>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- Confirmação de Reciclagem e Exclusão Permanente (contrato 1.5) -->
+  <div id="confirmActionModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirmActionTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="confirmActionTitle">Confirmar ação</h3>
+        <button class="modal-close-btn" data-close-modal="confirmActionModal" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="confirmActionDesc"></p>
+
+        <div class="confirm-summary-grid">
+          <div class="confirm-summary-item">
+            <span>Itens selecionados</span>
+            <strong id="confirmActionCount">0</strong>
+          </div>
+          <div class="confirm-summary-item">
+            <span>Tamanho total</span>
+            <strong id="confirmActionSize">0 B</strong>
+          </div>
+          <div class="confirm-summary-item hidden" id="confirmActionFilesBox">
+            <span>Arquivos contidos</span>
+            <strong id="confirmActionFiles">0</strong>
+          </div>
+        </div>
+
+        <div class="confirm-target-list" id="confirmActionList"></div>
+
+        <div class="form-group hidden" id="confirmActionInputGroup">
+          <label for="confirmActionInput" id="confirmActionInputLabel">Digite para confirmar:</label>
+          <input type="text" id="confirmActionInput" class="form-input" autocomplete="off" spellcheck="false">
+          <small class="form-hint" id="confirmActionInputHint"></small>
+        </div>
+
+        <div class="alert alert-danger hidden" id="confirmActionError"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal="confirmActionModal">Cancelar</button>
+        <button id="btnConfirmAction" class="btn btn-danger">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resultado por item de Reciclagem / Exclusão Permanente -->
+  <div id="actionResultsModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="actionResultsTitle">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3 id="actionResultsTitle">Resultado da operação</h3>
+        <button class="modal-close-btn" data-close-modal="actionResultsModal" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="dup-summary-banner" id="actionResultsSummary"></div>
+        <div class="event-logs-table-wrapper">
+          <table class="event-logs-table">
+            <thead>
+              <tr>
+                <th style="width: 140px;">Situação</th>
+                <th>Caminho</th>
+                <th style="width: 300px;">Motivo</th>
+              </tr>
+            </thead>
+            <tbody id="actionResultsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal="actionResultsModal">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sessão inválida: aviso bloqueante (contrato 1.1) -->
+  <div id="sessionInvalidOverlay" class="session-invalid-overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="sessionInvalidTitle">
+    <div class="session-invalid-card">
+      <div class="session-invalid-icon">🔒</div>
+      <h2 id="sessionInvalidTitle">Sessão inválida, reabra o ScanFile</h2>
+      <p>O token desta janela não é mais aceito pelo servidor local. Feche esta janela e abra o ScanFile novamente para criar uma nova Sessão.</p>
+    </div>
+  </div>
+
+
   <!-- Action Modal / Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
+  <script src="js/core.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
+
